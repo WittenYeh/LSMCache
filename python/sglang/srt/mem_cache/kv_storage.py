@@ -18,8 +18,7 @@ class KVStorage:
         pass
     
     def get_prefix(
-        input_ids: torch.Tensor,    
-        layer_id: int
+        input_ids: torch.Tensor
     ):
         prefix = None
         prefix_len = None
