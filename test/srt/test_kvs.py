@@ -28,14 +28,16 @@ if __name__ == "__main__":
         
     # retrive prefix 1
     matched_prefix, prefix_len, kv_buffer = kvs.get_prefix(prefix_1)
-    retrived_kv_tensors = [kvs.get_kv_cache(layer_id, kv_buffer).cpu() for layer_id in range(layer_num)]
+    retrived_kv_tensors_blocking = [kvs.get_kv_cache_blocking(layer_id, kv_buffer).cpu() for layer_id in range(layer_num)]
+    retrived_kv_tensors_non_blocking = [kvs.get_kv_cache(layer_id, kv_buffer).cpu() for layer_id in range(layer_num)]
     
     # print results
     print(f"Matched Prefix: {matched_prefix}")
     print(f"Prefix Length: {prefix_len}")
     assert torch.equal(matched_prefix, prefix_1), "Matched prefix does not match original prefix"
     assert prefix_len == prefix_1.shape[0], "Prefix length does not match original prefix length"
-    assert all(torch.equal(original_kv_tensors[layer_id], retrived_kv_tensors[layer_id]) for layer_id in range(layer_num)), "Retrieved KV tensors do not match original KV tensors"
+    assert all(torch.equal(original_kv_tensors[layer_id], retrived_kv_tensors_blocking[layer_id]) for layer_id in range(layer_num)), "Retrieved KV tensors do not match original KV tensors"
+    assert all(torch.equal(original_kv_tensors[layer_id], retrived_kv_tensors_non_blocking[layer_id]) for layer_id in range(layer_num)), "Retrieved KV tensors (non-blocking) do not match original KV tensors"
     
     # lookfor prefix 2
     matched_prefix, prefix_len, kv_buffer = kvs.get_prefix(prefix_2)

@@ -4,6 +4,10 @@ import numpy as np
 import rocksdb_binding as rocksdb
 from typing import Tuple
 import os
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
+from typing import Optional
+
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 class KVStorage:
@@ -20,7 +24,12 @@ class KVStorage:
     """
 
     def __init__(
-        self, dtype: torch.dtype, head_num: int, head_dim: int, layer_num: int, db_path: str = "~/LSMCache_db"
+        self,
+        dtype: torch.dtype,
+        head_num: int,
+        head_dim: int,
+        layer_num: int,
+        db_path: str = "~/LSMCache_db",
     ):
         self.dtype = dtype
         self.head_num = head_num
@@ -43,56 +52,92 @@ class KVStorage:
 
         total_tokens = input_ids.shape[0]
         for L in range(1, total_tokens + 1):
-            prefix_ids = input_ids[:L]                          # Prefix of length L
-            prefix_kv = kv_tensor[:L]                           # Corresponding KV
+            prefix_ids = input_ids[:L]  # Prefix of length L
+            prefix_kv = kv_tensor[:L]  # Corresponding KV
             key = self._make_key(prefix_ids, layer_id)
             value = prefix_kv.to(torch.float32).cpu().numpy().tobytes()
             self.db.put(key, value)
 
-    def get_prefix(
-        self, input_ids: torch.Tensor, device: torch.device = torch.device("cuda")
-    ) -> Tuple[torch.Tensor, int, torch.Tensor]:
+    def _fetch_and_stage(
+        self, keys, layer_num, prefix_len, head_num, head_dim, dtype, device
+    ):
+        """Runs inside a worker thread."""
+        # 1) RocksDB multiget
+        values = self.db.multiget(keys)
 
-        max_len = input_ids.shape[0]
-        prefix_len = 0
-        matched_prefix = None
-
-        # ── find longest prefix via layer‑0 ─────────────────────────────
-        for L in range(max_len, 0, -1):
-            cand = input_ids[:L]
-            db_key = self._make_key(cand, layer_id=0)
-            if self.db.get(db_key) is not None:
-                prefix_len = L
-                matched_prefix = cand
-                break
-
-        if matched_prefix is None:
-            return None, 0, None
-
-        # ── build multiget keys for all layers ──────────────────────────
-        keys = [self._make_key(matched_prefix, layer_id) for layer_id in range(self.layer_num)]
-        values = self.db.multiget(keys)  # returns Dict[key, Optional[str]]
-
-        # ── prepare GPU buffer ──────────────────────────────────────────
-        kv_buffer = torch.empty(
-            (self.layer_num, prefix_len, self.head_num, self.head_dim),
-            dtype=self.dtype,
-            device=device,
+        # 2) pinned CPU buffer
+        cpu_buf = torch.empty(
+            (layer_num, prefix_len, head_num, head_dim),
+            dtype=torch.float32,
+            pin_memory=True,
         )
 
+        # 3) disk to CPU 
         for layer_id, key in enumerate(keys):
             raw = values.get(key)
             if raw is None:
-                raise KeyError(f"Missing KV for prefix (len={prefix_len}) at layer {layer_id}")
-            kv_np = np.frombuffer(raw, dtype=np.float32).copy().reshape(
-                prefix_len, self.head_num, self.head_dim
+                raise KeyError(f"Missing KV for layer {layer_id}")
+            kv_np = np.frombuffer(raw, dtype=np.float32).reshape(
+                prefix_len, head_num, head_dim
             )
-            kv_buffer[layer_id] = torch.as_tensor(
-                kv_np, dtype=self.dtype, device=device
-            )
+            np.copyto(cpu_buf[layer_id].numpy(), kv_np)
 
-        return matched_prefix, prefix_len, kv_buffer
+        # 4) cpu to GPU
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            gpu_buf = cpu_buf.to(device=device, dtype=dtype, non_blocking=True)
 
+        # ensure the copy finishes before Future returns the tensor
+        stream.synchronize()
+        return gpu_buf
 
-    def get_kv_cache(self, layer_id: int, kv_loc: torch.Tensor) -> torch.Tensor:
-        return kv_loc[layer_id]
+    def get_prefix(
+        self,
+        input_ids: torch.Tensor,
+        device: torch.device = torch.device("cuda"),
+    ) -> Tuple[Optional[torch.Tensor], int, Optional[Future]]:
+        max_len = input_ids.shape[0]
+        matched_prefix, prefix_len = None, 0
+
+        # find longest prefix by probing layer-0
+        for L in range(max_len, 0, -1):
+            cand = input_ids[:L]
+            if self.db.get(self._make_key(cand, 0)) is not None:
+                matched_prefix, prefix_len = cand, L
+                break
+
+        if matched_prefix is None:
+            return None, 0, None  # nothing cached
+
+        # build keys for all layers
+        keys = [self._make_key(matched_prefix, lid) for lid in range(self.layer_num)]
+
+        # submit non-blocking task
+        kv_future: Future = _executor.submit(
+            self._fetch_and_stage,
+            keys,
+            self.layer_num,
+            prefix_len,
+            self.head_num,
+            self.head_dim,
+            self.dtype,
+            device,
+        )
+
+        # immediate return – Future will carry the GPU buffer later
+        return matched_prefix, prefix_len, kv_future
+
+    def get_kv_cache(self, layer_id: int, kv_loc: Future) -> Optional[torch.Tensor]:
+        if not kv_loc.done():
+            return None
+        gpu_buf = kv_loc.result()
+        return gpu_buf[layer_id]
+
+    def get_kv_cache_blocking(
+        self,
+        layer_id: int,
+        kv_loc: Future,
+        timeout: Optional[float] = None,  # seconds; None = wait forever
+    ) -> torch.Tensor:
+        gpu_buf = kv_loc.result(timeout=timeout)
+        return gpu_buf[layer_id]
