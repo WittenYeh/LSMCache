@@ -64,6 +64,8 @@ from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import flatten_nested_list, support_triton
 
+from sglang.srt.mem_cache.kv_storage import KVStorage
+
 if TYPE_CHECKING:
     from sglang.srt.speculative.eagle_utils import EagleDraftInput, EagleVerifyInput
     from sglang.srt.speculative.spec_info import SpeculativeAlgorithm
@@ -634,6 +636,12 @@ class Req:
 
     def init_next_round_input(
         self,
+        kv_storage: KVStorage
+    ):
+        pass
+        
+    def init_next_round_input(
+        self,
         tree_cache: Optional[BasePrefixCache] = None,
         enable_hierarchical_cache=False,
     ):
@@ -1050,6 +1058,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             return out_cache_loc
 
     def prepare_encoder_info_extend(self, input_ids: List[int], seq_lens: List[int]):
+        assert global_server_args_dict["enable_kvstore"] == False, \
+            "kvstore architecture does not support encoder/decoder struct"
+        
         self.encoder_lens_cpu = []
         self.encoder_cached = []
 
