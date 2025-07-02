@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
+from sglang.srt.mem_cache.kv_storage import KVStorage
+
 import torch
 import torch.distributed as dist
 
@@ -107,6 +109,8 @@ from sglang.srt.utils import (
     set_cpu_offload_max_bytes,
     set_cuda_arch,
 )
+
+from sglang.srt.mem_cache.kv_storage import KVStorage
 
 _is_hip = is_hip()
 
@@ -216,6 +220,17 @@ class ModelRunner:
         self.support_pp = (
             "pp_proxy_tensors" in inspect.signature(self.model.forward).parameters
         )
+        
+        self.kvstore = None
+        if server_args.enable_kvstore:
+            self.kvstore = KVStorage(
+                dtype=model_config.dtype,
+                head_num=model_config.num_attention_heads,
+                head_dim=model_config.head_dim,
+                layer_num=model_config.num_hidden_layers,
+                executor_worker_num=4
+            )
+        
 
     def initialize(self, min_per_gpu_memory: float):
         server_args = self.server_args
@@ -840,6 +855,9 @@ class ModelRunner:
         max_num_reqs: Optional[int] = None,
         max_total_tokens: Optional[int] = None,
     ):
+        assert not (self.server_args.enable_kvstore and self.page_size != 1), \
+            "KV Storage architecture requires page size = 1"
+        
         if self.server_args.kv_cache_dtype == "auto":
             self.kv_cache_dtype = self.dtype
         elif self.server_args.kv_cache_dtype == "fp8_e5m2":
@@ -939,12 +957,12 @@ class ModelRunner:
             # Draft worker shares req_to_token_pool with the target worker.
             assert self.is_draft_worker
             assert not self.enable_kvstore, \
-                "[ModelRunner::init_memory_pool] KV Storage Arch must initialize req_to_token_pool"
+                "[ModelRunner::init_memory_pool] KV Storage Arch must initialize req_to_token_pool currently."
 
         if self.use_mla_backend:
             
             assert not self.enable_kvstore,\
-                "[ModelRunner::init_memory_pool] KV Storage Arch does not support mla backend"
+                "[ModelRunner::init_memory_pool] KV Storage Arch does not support mla backend currently."
             
             self.token_to_kv_pool = MLATokenToKVPool(
                 self.max_total_num_tokens,
@@ -990,6 +1008,7 @@ class ModelRunner:
                 layer_num=self.num_effective_layers,
                 device=self.device,
                 enable_memory_saver=self.server_args.enable_memory_saver,
+                enable_kvstore=self.server_args.enable_kvstore
                 start_layer=self.start_layer,
                 end_layer=self.end_layer,
             )
@@ -1009,7 +1028,6 @@ class ModelRunner:
                     kvcache=self.token_to_kv_pool,
                 )
             else:
-                
                 
                 self.token_to_kv_pool_allocator = PagedTokenToKVPoolAllocator(
                     self.max_total_num_tokens,
@@ -1183,7 +1201,10 @@ class ModelRunner:
         if self.support_pp:
             kwargs["pp_proxy_tensors"] = pp_proxy_tensors
         return self.model.forward(
-            forward_batch.input_ids, forward_batch.positions, forward_batch, **kwargs
+            forward_batch.input_ids, 
+            forward_batch.positions, 
+            forward_batch, 
+            **kwargs
         )
 
     def forward_extend(
@@ -1204,7 +1225,14 @@ class ModelRunner:
             kwargs["get_embedding"] = True
             
         print("[ModelRunner::forward_extend] model.forward called")
-            
+        
+        pre_len_rt = forward_batch.input_ids.shape[0]
+        # try to find prefix with max length in storage
+        if self.kvstore is not None:
+            for i in range(forward_batch.seq_lens.shape[0]):
+                pre_len_rt = forward_batch.input_ids[i].shape[0]
+                max_pre_len = self.kvstore.probe_max_prefix(forward_batch.input_ids, pre_len_rt)
+        
         return self.model.forward(
             forward_batch.input_ids,
             forward_batch.positions,

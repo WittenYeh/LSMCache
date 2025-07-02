@@ -1,22 +1,25 @@
 import os
-from huggingface_hub import snapshot_download
+from modelscope.hub.snapshot_download import snapshot_download
+from modelscope.hub.api import HubApi  # 用于认证
 
-# 定义模型ID和本地目标文件夹
-model_id = "huggyllama/llama-7b"
+model_id = "skyline2006/llama-7b"  
 local_dir = "/home/yeweitang/llama-7b"
+token = "5e159a6a-ba99-4abc-8f3d-2f4d41f368ce" 
 
 # 确保目标文件夹存在
 os.makedirs(local_dir, exist_ok=True)
 
 print(f"开始下载模型 {model_id} 到 {local_dir}...")
 
-# 执行下载
+# ============== 新增认证步骤 ============== [3,4](@ref)
+hub_api = HubApi()
+hub_api.login(token)  # 使用ModelScope API Token认证
+
+# ============== 执行下载 ============== [3,4,5](@ref)
 snapshot_download(
-    repo_id=model_id,
-    local_dir=local_dir,
-    local_dir_use_symlinks=False,  # 建议设为False，直接复制文件而不是创建符号链接
-    token=token, # 如果你没有通过 `huggingface-cli login` 登录，可以在这里提供token
-    resume_download=True  # 允许断点续传
+    model_id=model_id,  # ⚠️ 参数名从 repo_id 改为 model_id
+    cache_dir=local_dir,  # ⚠️ 参数名从 local_dir 改为 cache_dir
+    revision='master',  # 指定分支/标签（默认master）
 )
 
 print("模型下载完成！")

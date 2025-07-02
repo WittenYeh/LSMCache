@@ -154,6 +154,8 @@ from sglang.srt.utils import (
 )
 from sglang.utils import TypeBasedDispatcher, get_exception_traceback
 
+from sglang.srt.mem_cache.kv_storage import KVStorage
+
 logger = logging.getLogger(__name__)
 
 # Test retract decode for debugging purposes
@@ -279,7 +281,7 @@ class Scheduler(
         if self.enable_overlap:
             TpWorkerClass = TpModelWorkerClient
             if self.server_args.enable_kvstore:
-                print("[Scheduler::__init__] kvstore version sglang does not support `--enable-overlap` currently")
+                print("[Scheduler::__init__] kvstore architecture does not support overlap mode currently.")
         else:
             TpWorkerClass = TpModelWorker
 
@@ -483,6 +485,9 @@ class Scheduler(
         
         print("[Scheduler] DisaggregationMode =", self.disaggregation_mode.value)
         
+        assert not (server_args.enable_kvstore and self.disaggregation_mode != DisaggregationMode.NULL), \
+            "kv storage architecture does not support disaggregation mode currently."
+        
         self.init_disaggregation()
 
     def init_tokenizer(self):
@@ -545,6 +550,7 @@ class Scheduler(
                     page_size=self.page_size,
                     disable=server_args.disable_radix_cache,
                     enable_kv_cache_events=self.enable_kv_cache_events,
+                    
                 )
 
         self.decode_mem_cache_buf_multiplier = (
@@ -578,6 +584,9 @@ class Scheduler(
             )
 
     def init_kv_events(self, kv_events_config: Optional[str]):
+        assert not (self.server_args.enable_kvstore and self.enable_kv_cache_events), \
+            "kv storage architecture does not support kv cache events mode currently."
+            
         if self.enable_kv_cache_events:
             self.kv_event_publisher = EventPublisherFactory.create(
                 kv_events_config, self.attn_dp_rank
@@ -915,6 +924,8 @@ class Scheduler(
 
     def process_input_requests(self, recv_reqs: List):
         for recv_req in recv_reqs:
+            print("[Scheduler::process_input_requests] process a recv_req with text: ", recv_req)
+            
             # If it is a health check generation request and there are running requests, ignore it.
             if is_health_check_generate_req(recv_req) and (
                 self.chunked_req is not None or not self.running_batch.is_empty()
@@ -934,6 +945,8 @@ class Scheduler(
         self,
         recv_req: TokenizedGenerateReqInput,
     ):
+        print("[Scheduler::handle_generate_request] recv_req: ", recv_req.input_text)
+        
         # Create a new request
         if (
             recv_req.session_params is None

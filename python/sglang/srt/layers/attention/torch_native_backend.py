@@ -22,6 +22,8 @@ class TorchNativeAttnBackend(AttentionBackend):
 
         self.forward_metadata = None
         self.device = model_runner.device
+        
+        self.enable_kvstore = model_runner.server_args.enable_kvstore
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Init the metadata for a forward pass."""
@@ -222,7 +224,7 @@ class TorchNativeAttnBackend(AttentionBackend):
             forward_batch.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
-
+        
         use_gqa = layer.tp_q_head_num != layer.tp_k_head_num
 
         q_ = q.view(-1, layer.tp_q_head_num, layer.qk_head_dim)

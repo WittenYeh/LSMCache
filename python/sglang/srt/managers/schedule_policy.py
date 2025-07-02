@@ -144,6 +144,7 @@ class SchedulePolicy:
             except ValueError:
                 raise ValueError(f"Unknown schedule_policy: {policy=}")
 
+    #
     def _compute_prefix_matches(
         self, waiting_queue: List[Req], policy: CacheAwarePolicy
     ) -> Set[int]:

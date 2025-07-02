@@ -56,6 +56,7 @@ from sglang.srt.distributed.parallel_state import get_tensor_model_parallel_rank
 from sglang.srt.layers.multimodal import gpu_tensor_hash
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.chunk_cache import ChunkCache
+from sglang.srt.mem_cache.radix_cache import RadixCache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool, TokenToKVPoolAllocator
 from sglang.srt.metrics.collector import TimeStats
 from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode, ForwardMode
@@ -453,6 +454,7 @@ class Req:
         bootstrap_host: Optional[str] = None,
         bootstrap_port: Optional[int] = None,
         bootstrap_room: Optional[int] = None,
+        enable_kvstore: bool = False,
     ):
         # Input and output info
         self.rid = rid
@@ -469,6 +471,9 @@ class Req:
         self.fill_ids = None
         self.session_id = session_id
         self.input_embeds = input_embeds
+
+        # KV Storage
+        self.enable_kvstore = enable_kvstore
 
         # Sampling info
         if isinstance(sampling_params.custom_params, dict):
@@ -516,6 +521,9 @@ class Req:
         # Prefix info
         # The indices to kv cache for the shared prefix.
         self.prefix_indices = []
+        # The extra kv cache length read from KV Storage
+        self.storage_length = 0 
+        
         # Number of tokens to run prefill.
         self.extend_input_len = 0
         # The relative logprob_start_len in an extend batch
@@ -633,31 +641,36 @@ class Req:
     def finished(self) -> bool:
         # Whether request reached finished condition
         return self.finished_reason is not None
-
-    def init_next_round_input(
-        self,
-        kv_storage: KVStorage
-    ):
-        pass
         
     def init_next_round_input(
         self,
         tree_cache: Optional[BasePrefixCache] = None,
         enable_hierarchical_cache=False,
-    ):
+    ):  
         self.fill_ids = self.origin_input_ids + self.output_ids
         if tree_cache is not None:
             # tree cache is None if the prefix is not computed with tree cache.
             if enable_hierarchical_cache:
                 self.prefix_indices, self.last_node, self.last_node_global = (
                     tree_cache.match_prefix(
-                        key=self.adjust_max_prefix_ids(), include_evicted=True
+                        key=self.adjust_max_prefix_ids(),
+                        include_evicted=True
                     )
                 )
             else:
-                self.prefix_indices, self.last_node = tree_cache.match_prefix(
-                    rid=self.rid, key=self.adjust_max_prefix_ids()
-                )
+                # we have token kv storage into account
+                if self.enable_kvstore:
+                    assert isinstance(tree_cache, RadixCache)
+                    self.prefix_indices, self.last_node, self.pre_len_rt, \
+                    self.pre_len_kvs, self.kv_future = tree_cache.kvstore_match_prefix(
+                        rid=self.rid, 
+                        key=self.adjust_max_prefix_ids()
+                    )
+                else:
+                    self.prefix_indices, self.last_node = tree_cache.match_prefix(
+                        rid=self.rid, 
+                        key=self.adjust_max_prefix_ids()
+                    )
         elif enable_hierarchical_cache:
             # in case last_node is evicted during scheduling, we need to update the prefix_indices
             while self.last_node.evicted:
@@ -905,6 +918,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
     # Whether to return hidden states
     return_hidden_states: bool = False
+    
+    # KV Storage
+    kvstore: KVStorage = None
 
     @classmethod
     def init_new(
@@ -918,6 +934,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         spec_algorithm: SpeculativeAlgorithm,
         enable_custom_logit_processor: bool,
         chunked_req: Optional[Req] = None,
+        kvstore: Optional[KVStorage] = None
     ):
         return_logprob = any(req.return_logprob for req in reqs)
 
@@ -936,6 +953,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             enable_custom_logit_processor=enable_custom_logit_processor,
             return_hidden_states=any(req.return_hidden_states for req in reqs),
             chunked_req=chunked_req,
+            kvstore = kvstore,
         )
 
     def batch_size(self):
@@ -1147,7 +1165,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         seq_lens = [len(r.fill_ids) for r in reqs]
         prefix_lens = [len(r.prefix_indices) for r in reqs]
         extend_lens = [r.extend_input_len for r in reqs]
-
+        if self.kvstore:
+            pre_lens_rt = [len(r.pre_len_rt) for r in reqs]
+            pre_lens_kvs = [len(r.pre_len_kvs) for r in reqs]
+            pre_lens_extra = [r.pre_len_kvs - r.pre_len_rt for r in reqs]
+            pre_lens_extra_num_tokens = sum(pre_lens_extra)
+        
         req_pool_indices_tensor = torch.tensor(req_pool_indices, dtype=torch.int64).to(
             self.device, non_blocking=True
         )
@@ -1160,6 +1183,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         prefix_lens_tensor = torch.tensor(
             prefix_lens, dtype=torch.int64, device=self.device
         )
+        if self.kvstore:
+            pre_lens_extra_tensor = torch.tensor(pre_lens_extra, dtype=torch.int64).to(
+                self.device, non_blocking=True
+            )
+            
         extend_lens_tensor = seq_lens_tensor - prefix_lens_tensor
 
         # Copy prefix and do some basic check
@@ -1243,6 +1271,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             extend_input_logprob_token_ids = None
 
         # Allocate memory
+        out_cache_loc_for_kvstore = self.alloc_token_slots(pre_lens_extra_num_tokens)
+        
+        # allocate memory for extend tokens
         if self.token_to_kv_pool_allocator.page_size == 1:
             out_cache_loc = self.alloc_token_slots(extend_num_tokens)
         else:
@@ -1260,6 +1291,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.req_pool_indices = req_pool_indices_tensor
         self.seq_lens = seq_lens_tensor
         self.out_cache_loc = out_cache_loc
+        if self.kvstore:
+            self.out_cache_loc_for_kvstore = out_cache_loc_for_kvstore
+            self.pre_lens_extra = pre_lens_extra_tensor
         self.input_embeds = (
             torch.tensor(input_embeds).to(self.device, non_blocking=True)
             if input_embeds
@@ -1289,6 +1323,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         # Write to req_to_token_pool
         if support_triton(global_server_args_dict.get("attention_backend")):
+            # TODO: let kvstore to support this?
+            
             # TODO: some tensors can be reused for ForwardBatchInfo (e.g., extend_lens, cumsum_start)
 
             write_req_to_token_pool_triton[(bs,)](
@@ -1304,6 +1340,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             pt = 0
             for i in range(bs):
                 self.req_to_token_pool.write(
+                    (req_pool_indices[i], slice(pre_lens_rt[i], pre_lens_kvs[i])),
+                    out_cache_loc[pt : pt + pre_lens_extra[i]],
+                )
+                self.req_to_token_pool.write(
                     (req_pool_indices[i], slice(prefix_lens[i], seq_lens[i])),
                     out_cache_loc[pt : pt + extend_lens[i]],
                 )
@@ -1317,6 +1357,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             self,
             self.model_config.vocab_size,
         )
+
+    def kvstore_match_prefix(self, input):
+        
 
     def mix_with_running(self, running_batch: "ScheduleBatch"):
         self.forward_mode = ForwardMode.MIXED
@@ -1749,6 +1792,8 @@ class ModelWorkerBatch:
     forward_mode: ForwardMode
     # The input ids
     input_ids: torch.Tensor
+    # The fill ids: 
+    fill_ids: torch.Tensor
     # The indices of requests in the req_to_token_pool
     req_pool_indices: torch.Tensor
     # The sequence length

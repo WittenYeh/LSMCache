@@ -10,7 +10,7 @@ class BasePrefixCache(ABC):
         pass
 
     @abstractmethod
-    def match_prefix(self, **kwargs) -> Tuple[List[int], int]:
+    def match_prefix(self, **kwargs):
         pass
 
     @abstractmethod

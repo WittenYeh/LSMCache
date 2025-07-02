@@ -1,0 +1,4 @@
+[submodule "3rdparty/python-rocksdb"]
+	path = 3rdparty/python-rocksdb
+	url = https://github.com/twmht/python-rocksdb.git
+	branch = pybind11

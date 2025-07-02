@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 import torch
 
+from sglang.srt.mem_cache.kv_storage import KVStorage
+
 from sglang.srt.disaggregation.kv_events import (
     AllBlocksCleared,
     BlockRemoved,
@@ -103,6 +105,7 @@ class RadixCache(BasePrefixCache):
         page_size: int,
         disable: bool = False,
         enable_kv_cache_events: bool = False,
+        kvstore: KVStorage = None
     ):
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
@@ -110,6 +113,7 @@ class RadixCache(BasePrefixCache):
         self.disable = disable
         self.enable_kv_cache_events = enable_kv_cache_events
         self.kv_event_queue = []
+        self.kvstore = kvstore
 
         if self.token_to_kv_pool_allocator:
             self.device = self.token_to_kv_pool_allocator.device
@@ -135,7 +139,7 @@ class RadixCache(BasePrefixCache):
         self.protected_size_ = 0
         self._record_all_cleared_event()
 
-    def match_prefix(self, key: List[int], **kwargs) -> Tuple[torch.Tensor, int]:
+    def match_prefix(self, **kwargs) -> Tuple[torch.Tensor, int]:
         """Find the matching prefix from the radix tree.
         Args:
             key: A list of token IDs to find a matching prefix.
@@ -167,6 +171,63 @@ class RadixCache(BasePrefixCache):
             value = torch.empty((0,), dtype=torch.int64, device=self.device)
         return value, last_node
 
+
+    def kvstore_match_prefix(
+        self, 
+        key: List[int],
+        **kwargs
+    ):
+        """Find the matching prefix from the radix tree.
+        Args:
+            key: A list of token IDs to find a matching prefix.
+        Returns:
+            A tuple of a tensor of matching prefix token IDs and
+            the last node that contains the prefix values. Note that
+            this API can modify the internal state of the Radix tree.
+            The last node create a new child if the prefix is shorter
+            than the last node's value.
+        """
+        if self.disable or len(key) == 0:
+            return (
+                torch.empty(
+                    (0,),
+                    dtype=torch.int64,
+                    device=self.device,
+                ),
+                self.root_node,
+            )
+
+        if self.page_size != 1:
+            page_aligned_len = len(key) // self.page_size * self.page_size
+            key = key[:page_aligned_len]
+
+        prefix_indices_rt, last_node = self._match_prefix_helper(self.root_node, key)
+        
+        if prefix_indices_rt:
+            prefix_indices_rt = torch.cat(prefix_indices_rt)
+        else:
+            prefix_indices_rt = torch.empty((0,), dtype=torch.int64, device=self.device)
+        
+        # max prefix length found in radix tree
+        pre_len_rt = prefix_indices_rt.shape[0]
+        # max prefix length found in KV Storageprobe_max_prefix
+        pre_len_kvs = pre_len_rt
+        
+        # try to find prefix with max length in storage
+        assert self.kvstore, "[RadixCache::kvstore_match_prefix] error"
+        
+        pre_len_kvs, kv_future = self.kvstore.probe_max_prefix(
+            key=key, 
+            min_length=pre_len_rt,
+            max_length=len(key)
+        )
+        
+        pre_len_extra = pre_len_kvs - pre_len_rt
+        prefix_indices = prefix_indices_rt + pre_len_extra * [-1] # placeholder
+        
+        return prefix_indices, last_node, \
+                pre_len_rt, pre_len_kvs, kv_future
+        
     def insert(self, key: List, value=None):
         if self.disable:
             return 0
@@ -494,7 +555,6 @@ class RadixCache(BasePrefixCache):
         events = self.kv_event_queue
         self.kv_event_queue = []
         return events
-
 
 if __name__ == "__main__":
     tree = RadixCache(None, None, page_size=1, disable=False)

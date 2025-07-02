@@ -45,6 +45,8 @@ from sglang.srt.utils import (
     next_power_of_2,
 )
 
+# from sglang.srt.mem_cache.kv_storage import KVStorage
+
 logger = logging.getLogger(__name__)
 
 GB = 1024 * 1024 * 1024
@@ -247,6 +249,7 @@ class MHATokenToKVPool(KVCache):
         layer_num: int,
         device: str,
         enable_memory_saver: bool,
+        # enable_kvstore: bool = False,
         start_layer: Optional[int] = None,
         end_layer: Optional[int] = None,
     ):
@@ -275,6 +278,17 @@ class MHATokenToKVPool(KVCache):
         logger.info(
             f"KV Cache is allocated. #tokens: {size}, K size: {k_size / GB:.2f} GB, V size: {v_size / GB:.2f} GB"
         )
+        
+        # if enable_kvstore:
+        #     self._create_storage()
+        
+    # def _create_storage(self):
+    #     self.kvstore = KVStorage(
+    #         self.dtype,
+    #         self.head_num,
+    #         self.head_dim,
+    #         self.layer_num
+    #     )
 
     def _create_buffers(self):
         with self.memory_saver_adapter.region():
