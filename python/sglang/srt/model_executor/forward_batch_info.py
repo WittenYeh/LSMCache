@@ -40,6 +40,8 @@ import triton.language as tl
 from sglang.srt.layers.rotary_embedding import MRotaryEmbedding
 from sglang.srt.utils import flatten_nested_list, get_compiler_backend, support_triton
 
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
+
 if TYPE_CHECKING:
     from sglang.srt.layers.attention.base_attn_backend import AttentionBackend
     from sglang.srt.managers.schedule_batch import ModelWorkerBatch, MultimodalInputs
@@ -258,6 +260,13 @@ class ForwardBatch:
     tbo_split_seq_index: Optional[int] = None
     tbo_parent_token_range: Optional[Tuple[int, int]] = None
     tbo_children: Optional[List["ForwardBatch"]] = None
+    
+    # KV Storage
+    prefix_lens_rt: Optional[List[int]] = None
+    prefix_lens_kvs: Optional[List[int]] = None
+    prefix_lens_extra: Optional[List[int]] = None
+    kv_futures: Optional[List[Future]] = None
+    out_cache_loc_for_kvstore: Optional[torch.Tensor] = None
 
     @classmethod
     def init_new(
@@ -267,36 +276,73 @@ class ForwardBatch:
     ):
         from sglang.srt.two_batch_overlap import TboForwardBatchPreparer
 
-        ret = cls(
-            forward_mode=batch.forward_mode,
-            batch_size=len(batch.seq_lens),
-            input_ids=batch.input_ids,
-            req_pool_indices=batch.req_pool_indices,
-            seq_lens=batch.seq_lens,
-            out_cache_loc=batch.out_cache_loc,
-            mm_inputs=batch.multimodal_inputs,
-            encoder_cached=batch.encoder_cached,
-            encoder_lens=batch.encoder_lens,
-            encoder_lens_cpu=batch.encoder_lens_cpu,
-            encoder_out_cache_loc=batch.encoder_out_cache_loc,
-            seq_lens_sum=batch.seq_lens_sum,
-            seq_lens_cpu=batch.seq_lens_cpu,
-            return_logprob=batch.return_logprob,
-            top_logprobs_nums=batch.top_logprobs_nums,
-            token_ids_logprobs=batch.token_ids_logprobs,
-            can_run_dp_cuda_graph=batch.can_run_dp_cuda_graph,
-            global_forward_mode=batch.global_forward_mode,
-            lora_paths=batch.lora_paths,
-            sampling_info=batch.sampling_info,
-            req_to_token_pool=model_runner.req_to_token_pool,
-            token_to_kv_pool=model_runner.token_to_kv_pool,
-            attn_backend=model_runner.attn_backend,
-            spec_algorithm=batch.spec_algorithm,
-            spec_info=batch.spec_info,
-            capture_hidden_mode=batch.capture_hidden_mode,
-            input_embeds=batch.input_embeds,
-            tbo_split_seq_index=batch.tbo_split_seq_index,
-        )
+        if model_runner.enable_kvstore:
+            ret = cls(
+                forward_mode=batch.forward_mode,
+                batch_size=len(batch.seq_lens),
+                input_ids=batch.input_ids,
+                req_pool_indices=batch.req_pool_indices,
+                seq_lens=batch.seq_lens,
+                out_cache_loc=batch.out_cache_loc,
+                mm_inputs=batch.multimodal_inputs,
+                encoder_cached=batch.encoder_cached,
+                encoder_lens=batch.encoder_lens,
+                encoder_lens_cpu=batch.encoder_lens_cpu,
+                encoder_out_cache_loc=batch.encoder_out_cache_loc,
+                seq_lens_sum=batch.seq_lens_sum,
+                seq_lens_cpu=batch.seq_lens_cpu,
+                return_logprob=batch.return_logprob,
+                top_logprobs_nums=batch.top_logprobs_nums,
+                token_ids_logprobs=batch.token_ids_logprobs,
+                can_run_dp_cuda_graph=batch.can_run_dp_cuda_graph,
+                global_forward_mode=batch.global_forward_mode,
+                lora_paths=batch.lora_paths,
+                sampling_info=batch.sampling_info,
+                req_to_token_pool=model_runner.req_to_token_pool,
+                token_to_kv_pool=model_runner.token_to_kv_pool,
+                attn_backend=model_runner.attn_backend,
+                spec_algorithm=batch.spec_algorithm,
+                spec_info=batch.spec_info,
+                capture_hidden_mode=batch.capture_hidden_mode,
+                input_embeds=batch.input_embeds,
+                tbo_split_seq_index=batch.tbo_split_seq_index,
+                prefix_lens_rt=batch.prefix_lens_rt,
+                prefix_lens_kvs=batch.prefix_lens_kvs,
+                prefix_lens_extra=batch.prefix_lens_extra,
+                kv_futures=batch.kv_futures,
+                out_cache_loc_for_kvstore=batch.out_cache_loc_for_kvstore
+            )
+        else:
+            ret = cls(
+                forward_mode=batch.forward_mode,
+                batch_size=len(batch.seq_lens),
+                input_ids=batch.input_ids,
+                req_pool_indices=batch.req_pool_indices,
+                seq_lens=batch.seq_lens,
+                out_cache_loc=batch.out_cache_loc,
+                mm_inputs=batch.multimodal_inputs,
+                encoder_cached=batch.encoder_cached,
+                encoder_lens=batch.encoder_lens,
+                encoder_lens_cpu=batch.encoder_lens_cpu,
+                encoder_out_cache_loc=batch.encoder_out_cache_loc,
+                seq_lens_sum=batch.seq_lens_sum,
+                seq_lens_cpu=batch.seq_lens_cpu,
+                return_logprob=batch.return_logprob,
+                top_logprobs_nums=batch.top_logprobs_nums,
+                token_ids_logprobs=batch.token_ids_logprobs,
+                can_run_dp_cuda_graph=batch.can_run_dp_cuda_graph,
+                global_forward_mode=batch.global_forward_mode,
+                lora_paths=batch.lora_paths,
+                sampling_info=batch.sampling_info,
+                req_to_token_pool=model_runner.req_to_token_pool,
+                token_to_kv_pool=model_runner.token_to_kv_pool,
+                attn_backend=model_runner.attn_backend,
+                spec_algorithm=batch.spec_algorithm,
+                spec_info=batch.spec_info,
+                capture_hidden_mode=batch.capture_hidden_mode,
+                input_embeds=batch.input_embeds,
+                tbo_split_seq_index=batch.tbo_split_seq_index
+            )
         device = model_runner.device
 
         if batch.extend_input_logprob_token_ids is not None:

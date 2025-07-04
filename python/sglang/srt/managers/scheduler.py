@@ -262,6 +262,13 @@ class Scheduler(
 
         # Init tokenizer
         self.init_tokenizer()
+        
+        # Init KV Storage (if needed)
+        self.enable_kvstore = server_args.enable_kvstore
+        if self.enable_kvstore:
+            self.init_kvstorage()
+        else:
+            self.kvstore = None
 
         # Set reasoning_parser and think_end_id if --reasoning_parser is enabled
         if self.server_args.reasoning_parser and self.tokenizer:
@@ -280,19 +287,30 @@ class Scheduler(
         # Launch a tensor parallel worker
         if self.enable_overlap:
             TpWorkerClass = TpModelWorkerClient
-            if self.server_args.enable_kvstore:
-                print("[Scheduler::__init__] kvstore architecture does not support overlap mode currently.")
+            assert not self.server_args.enable_kvstore, \
+                "[Scheduler::__init__] kvstore architecture does not support overlap mode currently."
         else:
             TpWorkerClass = TpModelWorker
 
-        self.tp_worker = TpWorkerClass(
-            server_args=server_args,
-            gpu_id=gpu_id,
-            tp_rank=tp_rank,
-            pp_rank=pp_rank,
-            dp_rank=dp_rank,
-            nccl_port=port_args.nccl_port,
-        )
+        if not self.enable_kvstore:
+            self.tp_worker = TpWorkerClass(
+                server_args=server_args,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                pp_rank=pp_rank,
+                dp_rank=dp_rank,
+                nccl_port=port_args.nccl_port,
+            )
+        else:
+            self.tp_worker = TpWorkerClass(
+                server_args=server_args,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+                pp_rank=pp_rank,
+                dp_rank=dp_rank,
+                nccl_port=port_args.nccl_port,
+                kvstore=self.kvstore
+            )
 
         # Launch a draft worker for speculative decoding
         if self.spec_algorithm.is_eagle():
@@ -550,7 +568,7 @@ class Scheduler(
                     page_size=self.page_size,
                     disable=server_args.disable_radix_cache,
                     enable_kv_cache_events=self.enable_kv_cache_events,
-                    
+                    kvstore=self.kvstore,
                 )
 
         self.decode_mem_cache_buf_multiplier = (
@@ -563,6 +581,15 @@ class Scheduler(
                     * server_args.speculative_num_steps
                 )
             )
+        )
+
+    def init_kvstorage(self):
+        self.kvstore = KVStorage(
+            dtype=self.model_config.dtype,
+            head_num=self.model_config.num_attention_heads,
+            head_dim=self.model_config.head_dim,
+            layer_num=self.model_config.num_hidden_layers,
+            executor_worker_num=4,
         )
 
     def init_metrics(self):
@@ -980,6 +1007,7 @@ class Scheduler(
                 bootstrap_host=recv_req.bootstrap_host,
                 bootstrap_port=recv_req.bootstrap_port,
                 bootstrap_room=recv_req.bootstrap_room,
+                enable_kvstore=self.enable_kvstore
             )
             req.tokenizer = self.tokenizer
 

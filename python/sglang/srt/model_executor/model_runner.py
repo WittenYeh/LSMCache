@@ -153,6 +153,7 @@ class ModelRunner:
         is_draft_worker: bool = False,
         req_to_token_pool: Optional[ReqToTokenPool] = None,
         token_to_kv_pool_allocator: Optional[TokenToKVPoolAllocator] = None,
+        kvstore: Optional[KVStorage] = None
     ):
         # Parse args
         self.model_config = model_config
@@ -185,6 +186,9 @@ class ModelRunner:
         self.attention_chunk_size = model_config.attention_chunk_size
 
         self.enable_kvstore = server_args.enable_kvstore
+        self.kvstore = kvstore
+        if self.enable_kvstore:
+            assert self.enable_kvstore is not None
 
         self.forward_pass_id = 0
 
@@ -230,7 +234,6 @@ class ModelRunner:
                 layer_num=model_config.num_hidden_layers,
                 executor_worker_num=4
             )
-        
 
     def initialize(self, min_per_gpu_memory: float):
         server_args = self.server_args
@@ -1008,7 +1011,6 @@ class ModelRunner:
                 layer_num=self.num_effective_layers,
                 device=self.device,
                 enable_memory_saver=self.server_args.enable_memory_saver,
-                enable_kvstore=self.server_args.enable_kvstore
                 start_layer=self.start_layer,
                 end_layer=self.end_layer,
             )
@@ -1228,7 +1230,7 @@ class ModelRunner:
         
         pre_len_rt = forward_batch.input_ids.shape[0]
         # try to find prefix with max length in storage
-        if self.kvstore is not None:
+        if self.enable_kvstore:
             for i in range(forward_batch.seq_lens.shape[0]):
                 pre_len_rt = forward_batch.input_ids[i].shape[0]
                 max_pre_len = self.kvstore.probe_max_prefix(forward_batch.input_ids, pre_len_rt)

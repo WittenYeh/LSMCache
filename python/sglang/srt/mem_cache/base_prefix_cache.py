@@ -12,6 +12,10 @@ class BasePrefixCache(ABC):
     @abstractmethod
     def match_prefix(self, **kwargs):
         pass
+    
+    @abstractmethod
+    def kvstore_match_prefix(self, key: List[int], **kwargs):
+        pass
 
     @abstractmethod
     def insert(self, **kwargs):

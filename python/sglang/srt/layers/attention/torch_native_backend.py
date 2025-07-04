@@ -23,7 +23,10 @@ class TorchNativeAttnBackend(AttentionBackend):
         self.forward_metadata = None
         self.device = model_runner.device
         
-        self.enable_kvstore = model_runner.server_args.enable_kvstore
+        self.enable_kvstore = model_runner.enable_kvstore
+        self.kvstore = model_runner.kvstore
+        
+        self.layer_num = model_runner.num_effective_layers
 
     def init_forward_metadata(self, forward_batch: ForwardBatch):
         """Init the metadata for a forward pass."""
@@ -208,7 +211,18 @@ class TorchNativeAttnBackend(AttentionBackend):
         print(f"→ forward_mode: {forward_batch.forward_mode}")
         print(f"→ batch_size: {forward_batch.batch_size}")
         print(f"→ input token count: {q.shape[0]}")
-        print(f"→ out_cache_loc: {forward_batch.out_cache_loc}")
+        if self.enable_kvstore:
+            print(f"→ prefix_len_rt:")
+            for i in range(forward_batch.batch_size):
+                print(f"req[{i}]: {forward_batch.prefix_lens_rt[i]}")
+            print(f"→ prefix_len_kvs:")
+            for i in range(forward_batch.batch_size):
+                print(f"req[{i}]: {forward_batch.prefix_lens_kvs[i]}")
+            print(f"→ prefix_len_extra:")
+            for i in range(forward_batch.batch_size):
+                print(f"req[{i}]: {forward_batch.prefix_lens_extra[i]}")
+            print(f"→ out_cache_loc shape: {forward_batch.out_cache_loc.shape[0]}")
+            print(f"→ out_cache_loc_for_kvstore shape: {forward_batch.out_cache_loc_for_kvstore.shape[0]}")
         print(f"→ k shape: {k.shape}")
         print(f"→ v shape: {v.shape}")
         print(f"→ extend_prefix_lens: {forward_batch.extend_prefix_lens_cpu}")
@@ -221,9 +235,20 @@ class TorchNativeAttnBackend(AttentionBackend):
             o = torch.empty_like(q)
 
         if save_kv_cache:
+            # save kv_cahce for kv tensor from kv storage
+            if layer.layer_id == self.layer_num - 1:
+                kv_tensors = [self.kvstore.wait_for_kv(kv_future) for kv_future in forward_batch.kv_futures]
+                self.total_kv_tensor = torch.cat(kv_tensors, dim=0)
+            # wait for result of db fetching
+            # concat kv tensor
+            forward_batch.token_to_kv_pool.set_kv_buffer(
+                layer, 
+            )
+            # save kv_cache for kv tensor computed by attention backend
             forward_batch.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )
+            
         
         use_gqa = layer.tp_q_head_num != layer.tp_k_head_num
 

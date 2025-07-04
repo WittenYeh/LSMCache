@@ -40,6 +40,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardBatch, PPProxyTe
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import MultiprocessingSerializer, broadcast_pyobj, set_random_seed
+from sglang.srt.mem_cache.kv_storage import KVStorage
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class TpModelWorker:
         is_draft_worker: bool = False,
         req_to_token_pool: Optional[ReqToTokenPool] = None,
         token_to_kv_pool_allocator: Optional[TokenToKVPoolAllocator] = None,
+        kvstore: Optional[KVStorage] = None,
     ):
         print("[TpModelWorker] initialize")
         
@@ -90,6 +92,7 @@ class TpModelWorker:
             is_draft_worker=is_draft_worker,
             req_to_token_pool=req_to_token_pool,
             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+            kvstore=kvstore,
         )
         if server_args.skip_tokenizer_init:
             self.tokenizer = self.processor = None

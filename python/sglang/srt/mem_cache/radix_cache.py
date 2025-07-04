@@ -39,6 +39,8 @@ from sglang.srt.managers.schedule_batch import global_server_args_dict
 from sglang.srt.mem_cache.base_prefix_cache import BasePrefixCache
 from sglang.srt.mem_cache.memory_pool import ReqToTokenPool, TokenToKVPoolAllocator
 
+from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
+
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
 
@@ -114,6 +116,8 @@ class RadixCache(BasePrefixCache):
         self.enable_kv_cache_events = enable_kv_cache_events
         self.kv_event_queue = []
         self.kvstore = kvstore
+        
+        self.enable_kvstore = self.kvstore is not None
 
         if self.token_to_kv_pool_allocator:
             self.device = self.token_to_kv_pool_allocator.device
@@ -176,7 +180,7 @@ class RadixCache(BasePrefixCache):
         self, 
         key: List[int],
         **kwargs
-    ):
+    ) -> Tuple[torch.Tensor, int, int, int, Future]:
         """Find the matching prefix from the radix tree.
         Args:
             key: A list of token IDs to find a matching prefix.
@@ -187,6 +191,8 @@ class RadixCache(BasePrefixCache):
             The last node create a new child if the prefix is shorter
             than the last node's value.
         """
+        assert self.enable_kvstore
+        
         if self.disable or len(key) == 0:
             return (
                 torch.empty(
@@ -209,24 +215,25 @@ class RadixCache(BasePrefixCache):
             prefix_indices_rt = torch.empty((0,), dtype=torch.int64, device=self.device)
         
         # max prefix length found in radix tree
-        pre_len_rt = prefix_indices_rt.shape[0]
-        # max prefix length found in KV Storageprobe_max_prefix
-        pre_len_kvs = pre_len_rt
+        prefix_len_rt = prefix_indices_rt.shape[0]
+        # max prefix length found in KV Storage probe_max_prefix
+        prefix_len_kvs = prefix_len_rt
         
         # try to find prefix with max length in storage
         assert self.kvstore, "[RadixCache::kvstore_match_prefix] error"
         
-        pre_len_kvs, kv_future = self.kvstore.probe_max_prefix(
+        prefix_len_kvs, kv_future = self.kvstore.probe_max_prefix(
             key=key, 
-            min_length=pre_len_rt,
-            max_length=len(key)
+            min_length=prefix_len_rt,
+            max_length=len(key),
+            prefix_len_rt=prefix_len_rt
         )
         
-        pre_len_extra = pre_len_kvs - pre_len_rt
-        prefix_indices = prefix_indices_rt + pre_len_extra * [-1] # placeholder
+        prefix_len_extra = prefix_len_kvs - prefix_len_rt
+        prefix_indices = prefix_indices_rt + prefix_len_extra * [-1] # placeholder
         
         return prefix_indices, last_node, \
-                pre_len_rt, pre_len_kvs, kv_future
+                prefix_len_rt, prefix_len_kvs, kv_future
         
     def insert(self, key: List, value=None):
         if self.disable:
