@@ -584,6 +584,7 @@ class Scheduler(
         )
 
     def init_kvstorage(self):
+        print("[Scheduler] Initializing KVStorage")
         self.kvstore = KVStorage(
             dtype=self.model_config.dtype,
             head_num=self.model_config.num_attention_heads,

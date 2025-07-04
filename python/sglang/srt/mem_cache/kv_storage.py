@@ -1,27 +1,32 @@
 import struct
 import torch
 import numpy as np
+import rocksdb_binding as rocksdb
 from typing import Tuple, Dict, Optional, List
 import os
 from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
 from typing import Optional
 import threading
 
-_executor = ThreadPoolExecutor(max_workers=4)
-
+import threading
 
 class KVStorage:
-    """RocksDB-backed KV cache
+    _instance = None
+    _lock = threading.Lock()
 
-    Key format  =   <prefix bytes>  ||  <layer_id:int32>
-    * prefix = raw `key.tobytes()` (variable length)
-    * layer  = little-endian int32 appended at the end
-
-    `get_prefix()` scans for the longest matching prefix *only in layer-0*.
-    Once found, it loads corresponding KV tensors from *all layers*
-    into a single contiguous GPU buffer (returned as `kv_loc`).
-    Later, `get_kv_cache()` slices this buffer using the `layer_id`.
-    """
+    def __new__(cls, *args, **kwargs):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(KVStorage, cls).__new__(cls)
+                cls._instance._first_init_args = (args, kwargs)
+            else:
+                # Check if parameters match the original
+                if (args, kwargs) != cls._instance._first_init_args:
+                    raise ValueError(
+                        f"KVStorage singleton already created with different parameters: "
+                        f"expected {cls._instance._first_init_args}, got {(args, kwargs)}"
+                    )
+            return cls._instance
 
     def __init__(
         self,
@@ -30,30 +35,45 @@ class KVStorage:
         head_dim: int,
         layer_num: int,
         executor_worker_num: int = 4,
-        db_path: str = "~/LSMCache_db",
+        db_path: str = "~/kv4kv/KVS",
     ):
+        if getattr(self, '_initialized', False):
+            return
+        self._initialized = True
+
         self.dtype = dtype
         self.head_num = head_num
         self.head_dim = head_dim
         self.layer_num = layer_num
-        self.db_path = db_path
+        self.db_path = os.path.expanduser(db_path)
 
-        self.db = SimpleFileDB(db_path=db_path)
-        
+        self.db = rocksdb.RocksDB()
+        print(f"Opening RocksDB at '{self.db_path}'")
+        open_status = self.db.open(self.db_path)
+        assert open_status
+
         self.executor = ThreadPoolExecutor(max_workers=executor_worker_num)
-        
+
     def __del__(self):
-        if hasattr(self, 'db'):
-            del self.db
-            self.db = None
-            print(f"RocksDB instance at '{self.db_path}' closed.")
+        # is it necessary?
+        pass
+        # if hasattr(self, 'db'):
+        #     del self.db
+        #     self.db = None
+        #     print(f"RocksDB instance at '{self.db_path}' closed.")
         
-        if hasattr(self, 'executor'):
-            self.executor.shutdown(wait=True)
+        # if hasattr(self, 'executor'):
+        #     self.executor.shutdown(wait=True)
 
     def _make_key(self, key: torch.Tensor) -> bytes:
         """Prefix bytes → RocksDB key"""
-        return key.cpu().numpy().tobytes()
+        if isinstance(key, torch.Tensor):
+            return key.cpu().numpy().tobytes()
+        elif isinstance(key, bytes):
+            return key
+        elif isinstance(key, list):
+            assert isinstance(key[0], int), "List keys must contain integers"
+            return np.array(key, dtype=np.int32).tobytes()
 
     def put_prefix_kv(
         self, 
@@ -69,33 +89,33 @@ class KVStorage:
         for L in range(1, pre_len + 1):
             prefix_ids = key[:L]  # Prefix of length L
             prefix_tensor = kv_tensor[:, :, :L, :, :]
-            key = self._make_key(prefix_ids)
+            db_key = self._make_key(prefix_ids)
             value = prefix_tensor.to(torch.float32).cpu().numpy().tobytes()
-            self.db.put(key, value)
+            put_status = self.db.put(db_key, value)
+            assert put_status
 
     def probe_max_prefix(
-        self,
+        self, 
         key: torch.Tensor, 
-        prefix_len_rt: int,
         min_length: int,
         max_length: int
-    ) -> Tuple[Optional[List[int]], int, Optional[Future]]:
+    ) -> Tuple[int, Optional[Future]]:
         matched_pre_len = min_length
-        print("[KVStorage::probe_max_prefix] key is ", key)
         for pre_len in range(min_length + 1, max_length + 1):
-            position = self.db.probe(self._make_key(key[:pre_len]))
-            if position is None:
+            db_key = self._make_key(key[:pre_len])
+            result = self.db.get(db_key)
+            if result is None:
                 break
             else:
                 matched_pre_len = pre_len
         
-        if matched_pre_len > min_length:
+        if matched_pre_len != 0:
+            matched_key = key[:matched_pre_len]
+            
             # issue a worker thread to perform _rocksdb_get
-            kv_future: Future = _executor.submit(
-                self._db_io,
-                position,
-                prefix_len_rt,
-                matched_pre_len,
+            kv_future: Future = self.executor.submit(
+                self._rocksdb_get,
+                matched_key,
                 torch.device("cuda")
             )
                 
@@ -103,21 +123,18 @@ class KVStorage:
         else:
             return matched_pre_len, None
 
-    def _db_io(
+    def _rocksdb_get(
         self,
-        position,
-        prefix_len_rt: int,
-        prefix_len_kvs: int,
+        matched_key: torch.Tensor | List[int],
         device: torch.device = torch.device("cuda"),
     ) -> torch.Tensor:
-        # disk to cpu
-        result = self.db.get(position=position)                
-        kv_cpu_raw = result.data
+        # disk to cpu          
+        kv_cpu_raw = self.db.get(self._make_key(matched_key))   
         # cpu reshape
-        kv_np = np.frombuffer(kv_cpu_raw[prefix_len_rt, :], dtype=np.float32).reshape(
-            2, self.layer_num, prefix_len_kvs - prefix_len_rt, self.head_num, self.head_dim
+        kv_np = np.frombuffer(kv_cpu_raw, dtype=np.float32).reshape(
+            2, self.layer_num, matched_key.shape[0], self.head_num, self.head_dim
         )
-        kv_tensor = torch.from_numpy(kv_np)
+        kv_tensor = torch.from_numpy(kv_np.copy())
         # cpu to gpu
         kv_tensor = kv_tensor.to(device=device, dtype=self.dtype)
                 
@@ -134,118 +151,52 @@ class KVStorage:
             head_dim != self.head_dim:
             raise ValueError("invalid shape of kv_tensor")
         return kv_tensor
-
-class SimpleFileDB:
-    """
-    A simple file-based key-value store with three basic operations:
-    put, get, and probe. It operates directly on byte strings for keys and values.
-
-    - `put`: Appends a new (key, value) pair to the end of the file.
-    - `get`: Retrieves a (key, value) pair from a specific line number (position).
-    - `probe`: Searches for a key and returns its line number (position) if found.
-
-    WARNING: This is a simplistic implementation for debugging and is not
-             performant or robust for production use.
-    """
-    def __init__(self, db_path: str = "~/simple_file_db.bin"):
-        self.db_path = os.path.expanduser(db_path)
-        self.file_lock = threading.Lock()
-
-        if not os.path.exists(self.db_path):
-            with open(self.db_path, 'wb') as f:
-                pass
         
-        print(f"SimpleFileDB (Binary) initialized. Using file at: '{self.db_path}'")
-
-    def put(self, key: bytes, value: bytes) -> None:
-        """
-        Appends a new key-value record to the binary file.
-
-        Args:
-            key (bytes): The key.
-            value (bytes): The value.
-        """
-        key_len = len(key)
-        value_len = len(value)
         
-        # 'Q' represents unsigned long long (8 bytes)
-        packed_key_len = struct.pack('Q', key_len)
-        packed_value_len = struct.pack('Q', value_len)
+        
 
-        with self.file_lock:
-            # 使用 'ab' (append binary) 模式
-            with open(self.db_path, 'ab') as f:
-                f.write(packed_key_len)
-                f.write(key)
-                f.write(packed_value_len)
-                f.write(value)
 
-    def get(self, position: int) -> Optional[Tuple[bytes, bytes]]:
-        """
-        Retrieves the key-value pair starting at a specific file offset (position).
-
-        Args:
-            position (int): The file offset to start reading from.
-
-        Returns:
-            A tuple of (key, value) in bytes, or None if reading fails.
-        """
-        if position < 0:
-            return None
-
-        with self.file_lock:
-            with open(self.db_path, 'rb') as f:
-                f.seek(position)
-                
-                # read the length of key (8 bytes)
-                packed_key_len = f.read(8)
-                if len(packed_key_len) < 8: return None
-                key_len = struct.unpack('Q', packed_key_len)[0]
-                
-                # read key
-                key = f.read(key_len)
-                if len(key) < key_len: return None
-
-                # read the length of value (8 bytes)
-                packed_value_len = f.read(8)
-                if len(packed_value_len) < 8: return None
-                value_len = struct.unpack('Q', packed_value_len)[0]
-                
-                # read value
-                value = f.read(value_len)
-                if len(value) < value_len: return None
-
-                return key, value
-
-    def probe(self, target_key: bytes) -> Optional[int]:
-        """
-        Searches for a target key in the file and returns its starting file offset (position).
-        This implementation iterates through the file record by record.
-
-        Args:
-            target_key (bytes): The key to search for.
-
-        Returns:
-            The file offset (position) if the key is found, otherwise None.
-        """
-        with self.file_lock:
-            with open(self.db_path, 'rb') as f:
-                current_pos = 0
-                while True:
-                    record_start_pos = f.tell()
-                    packed_key_len = f.read(8)
-                    if not packed_key_len:
-                        break  # file end
-                    key_len = struct.unpack('Q', packed_key_len)[0]
-                    key = f.read(key_len)
-
-                    packed_value_len = f.read(8)
-                    value_len = struct.unpack('Q', packed_value_len)[0]
-                    
-                    if key == target_key:
-                        return record_start_pos
-
-                    # 跳过 value 部分，移动到下一条记录
-                    f.seek(value_len, 1) # 1 表示从当前位置向后移动
-        return None
+if __name__ == "__main__":
+    head_num = 2
+    head_dim = 4
+    layer_num = 8
+    kvs = KVStorage(
+        dtype=torch.float16,
+        head_num=head_num,
+        head_dim=head_dim,
+        layer_num=layer_num,
+        executor_worker_num=4,
+        db_path="~/kv4kv/test",
+    )
     
+    key1 = torch.tensor([1, 2, 3, 4, 5, 6], dtype=torch.int32)
+    kv_tensor1 = torch.randn(2, layer_num, 6, head_num, head_dim, dtype=torch.float16)
+    kvs.put_prefix_kv(key1, kv_tensor1)
+    
+    
+    matched_pre_len, kv_future = kvs.probe_max_prefix(
+        key=torch.tensor([1, 2, 3, 4, 5, 6, 7], dtype=torch.int32),
+        min_length=0,
+        max_length=7,
+    )
+    kv = kv_future.result() if kv_future else None
+    assert matched_pre_len == 6 
+    assert torch.equal(kv.cpu(), kv_tensor1)
+    
+    matched_pre_len, kv_future = kvs.probe_max_prefix(
+        key=torch.tensor([1, 2, 3, 4, 5, 6], dtype=torch.int32),
+        min_length=0,
+        max_length=6,
+    )
+    kv = kv_future.result() if kv_future else None
+    assert matched_pre_len == 6 
+    assert torch.equal(kv.cpu(), kv_tensor1)
+    
+    matched_pre_len, kv_future = kvs.probe_max_prefix(
+        key=torch.tensor([1, 2, 3, 4, 5], dtype=torch.int32),
+        min_length=0,
+        max_length=5,
+    )
+    kv = kv_future.result() if kv_future else None
+    assert matched_pre_len == 5 
+    assert torch.equal(kv.cpu(), kv_tensor1[:, :, :5, :, :])

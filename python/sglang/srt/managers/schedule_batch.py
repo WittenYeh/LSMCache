@@ -628,6 +628,7 @@ class Req:
         # We use `tmp_end_idx` to store the end index of the kv cache to send.
         self.tmp_end_idx: int = -1
         self.metadata_buffer_index: int = -1
+        self.kv_future: Optional[Future] = None
 
     @property
     def seqlen(self):
@@ -1858,7 +1859,7 @@ class ModelWorkerBatch:
     # The input ids
     input_ids: torch.Tensor
     # The fill ids: 
-    fill_ids: torch.Tensor
+    # fill_ids: torch.Tensor
     # The indices of requests in the req_to_token_pool
     req_pool_indices: torch.Tensor
     # The sequence length
