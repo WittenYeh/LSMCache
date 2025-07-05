@@ -584,9 +584,10 @@ class Scheduler(
         )
 
     def init_kvstorage(self):
+        print("[Scheduler] Initializing KVStorage")
         self.kvstore = KVStorage(
             dtype=self.model_config.dtype,
-            head_num=self.model_config.num_attention_heads,
+            head_num=self.model_config.num_key_value_heads,
             head_dim=self.model_config.head_dim,
             layer_num=self.model_config.num_hidden_layers,
             executor_worker_num=4,
@@ -1393,6 +1394,7 @@ class Scheduler(
         if new_batch is not None:
             # Run prefill first if possible
             ret = new_batch
+            print(f"[Scheduler::get_next_batch_to_run] {new_batch.prefix_lens_rt=}")
         else:
             # Run decode
             if not self.running_batch.is_empty():
@@ -1532,7 +1534,7 @@ class Scheduler(
         # Print stats
         if self.attn_tp_rank == 0:
             self.log_prefill_stats(adder, can_run_list, running_bs)
-
+        print(f"[Scheduler::get_new_batch_prefill] {self.kvstore=}")
         # Create a new batch
         new_batch = ScheduleBatch.init_new(
             can_run_list,
@@ -1544,6 +1546,7 @@ class Scheduler(
             self.spec_algorithm,
             self.server_args.enable_custom_logit_processor,
             chunked_req=self.chunked_req,
+            kvstore=self.kvstore,
         )
         new_batch.prepare_for_extend()
 

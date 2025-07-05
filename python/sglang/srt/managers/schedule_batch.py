@@ -628,6 +628,7 @@ class Req:
         # We use `tmp_end_idx` to store the end index of the kv cache to send.
         self.tmp_end_idx: int = -1
         self.metadata_buffer_index: int = -1
+        self.kv_future: Optional[Future] = None
 
     @property
     def seqlen(self):
@@ -923,6 +924,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
     
     # KV Storage
     kvstore: KVStorage = None
+    
+    out_cache_loc_for_kvstore = None
+    prefix_lens_rt = None
+    prefix_lens_kvs = None
+    prefix_lens_extra = None
+    kv_futures = None
 
     @classmethod
     def init_new(
@@ -939,7 +946,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         kvstore: Optional[KVStorage] = None
     ):
         return_logprob = any(req.return_logprob for req in reqs)
-
+        print(f"[ScheduleBatch::init_new] {kvstore=}")
         return cls(
             reqs=reqs,
             req_to_token_pool=req_to_token_pool,
@@ -955,7 +962,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             enable_custom_logit_processor=enable_custom_logit_processor,
             return_hidden_states=any(req.return_hidden_states for req in reqs),
             chunked_req=chunked_req,
-            kvstore = kvstore,
+            kvstore=kvstore,
         )
 
     def batch_size(self):
@@ -1170,8 +1177,8 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         kv_futures = [r.kv_future for r in reqs]
         
         if self.kvstore:
-            prefix_lens_rt = [len(r.prefix_len_rt) for r in reqs]
-            prefix_lens_kvs = [len(r.prefix_len_kvs) for r in reqs]
+            prefix_lens_rt = [r.prefix_len_rt for r in reqs]
+            prefix_lens_kvs = [r.prefix_len_kvs for r in reqs]
             prefix_lens_extra = [r.prefix_len_kvs - r.prefix_len_rt for r in reqs]
             prefix_lens_extra_num_tokens = sum(prefix_lens_extra)
         
@@ -1293,7 +1300,9 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.req_pool_indices = req_pool_indices_tensor
         self.seq_lens = seq_lens_tensor
         self.out_cache_loc = out_cache_loc
+        print(f"[ScheduleBatch::prepare_for_extend] {self.kvstore=}")
         if self.kvstore:
+            print(f"[ScheduleBatch::prepare_for_extend] {out_cache_loc_for_kvstore=} {prefix_lens_extra=} {prefix_lens_rt=} {prefix_lens_kvs=} {prefix_lens_extra=}")
             self.out_cache_loc_for_kvstore = out_cache_loc_for_kvstore
             self.prefix_lens_rt = prefix_lens_rt
             self.prefix_lens_kvs = prefix_lens_kvs
@@ -1341,7 +1350,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 out_cache_loc,
                 self.req_to_token_pool.req_to_token.shape[1],
             )
-        else:
+        elif self.kvstore:
             pt1, pt2 = 0, 0
             for i in range(bs):
                 # copy cache loc of extra prefix tokens (transfered by KV Storage)
@@ -1356,6 +1365,14 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                     out_cache_loc[pt2 : pt2 + extend_lens[i]],
                 )
                 pt2 += extend_lens[i]
+        else:
+            pt = 0
+            for i in range(bs):
+                self.req_to_token_pool.write(
+                    (req_pool_indices[i], slice(prefix_lens[i], seq_lens[i])),
+                    out_cache_loc[pt : pt + extend_lens[i]],
+                )
+                pt += extend_lens[i]
 
         if self.model_config.is_encoder_decoder:
             self.prepare_encoder_info_extend(input_ids, seq_lens)
@@ -1858,7 +1875,7 @@ class ModelWorkerBatch:
     # The input ids
     input_ids: torch.Tensor
     # The fill ids: 
-    fill_ids: torch.Tensor
+    # fill_ids: torch.Tensor
     # The indices of requests in the req_to_token_pool
     req_pool_indices: torch.Tensor
     # The sequence length

@@ -154,6 +154,7 @@ class RadixCache(BasePrefixCache):
             The last node create a new child if the prefix is shorter
             than the last node's value.
         """
+        key = kwargs.get("key", [])
         if self.disable or len(key) == 0:
             return (
                 torch.empty(
@@ -226,11 +227,12 @@ class RadixCache(BasePrefixCache):
             key=key, 
             min_length=prefix_len_rt,
             max_length=len(key),
-            prefix_len_rt=prefix_len_rt
         )
         
         prefix_len_extra = prefix_len_kvs - prefix_len_rt
-        prefix_indices = prefix_indices_rt + prefix_len_extra * [-1] # placeholder
+        prefix_indices = torch.cat(
+            [prefix_indices_rt, torch.full((prefix_len_extra,), -1, dtype=torch.int64, device=self.device)]
+        )
         
         return prefix_indices, last_node, \
                 prefix_len_rt, prefix_len_kvs, kv_future
@@ -245,6 +247,7 @@ class RadixCache(BasePrefixCache):
 
     def cache_finished_req(self, req: Req):
         """Cache request when it finishes."""
+        print(f"[RadixCache::cache_finished_req] {self.disable=}")
         if self.disable:
             kv_indices = self.req_to_token_pool.req_to_token[
                 req.req_pool_idx, : len(req.origin_input_ids) + len(req.output_ids) - 1
@@ -258,6 +261,13 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
 
+        if self.kvstore:
+            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+            self.kvstore.put_prefix_kv(
+                key=token_ids,
+                kv_tensor=kv_tensor,
+            )
+        
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
             page_aligned_kv_indices = kv_indices[:page_aligned_len].clone()
@@ -280,6 +290,7 @@ class RadixCache(BasePrefixCache):
 
     def cache_unfinished_req(self, req: Req):
         """Cache request when it is unfinished."""
+        print(f"[RadixCache::cache_unfinished_req] {self.disable=}")
         if self.disable:
             return
 
@@ -287,6 +298,13 @@ class RadixCache(BasePrefixCache):
         kv_indices = self.req_to_token_pool.req_to_token[
             req.req_pool_idx, : len(token_ids)
         ]
+
+        if self.kvstore:
+            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+            self.kvstore.put_prefix_kv(
+                key=token_ids,
+                kv_tensor=kv_tensor,
+            )
 
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
@@ -303,7 +321,7 @@ class RadixCache(BasePrefixCache):
         )
 
         # The prefix indices could be updated, reuse it
-        new_indices, new_last_node = self.match_prefix(page_aligned_token_ids)
+        new_indices, new_last_node = self.match_prefix(key=page_aligned_token_ids)
         self.req_to_token_pool.write(
             (req.req_pool_idx, slice(len(req.prefix_indices), len(new_indices))),
             new_indices[len(req.prefix_indices) :],
