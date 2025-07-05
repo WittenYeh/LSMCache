@@ -234,7 +234,9 @@ compile_commands.json
 # Rust lib
 Cargo.lock
 
-KVS
-
 # download script
 download.py
+
+temp*
+output*.txt
+KVS/db

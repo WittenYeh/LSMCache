@@ -230,7 +230,7 @@ class ModelRunner:
             print("[ModelRunner] Initializing KVStore...")
             self.kvstore = KVStorage(
                 dtype=model_config.dtype,
-                head_num=model_config.num_attention_heads,
+                head_num=model_config.num_key_value_heads,
                 head_dim=model_config.head_dim,
                 layer_num=model_config.num_hidden_layers,
                 executor_worker_num=4
@@ -1228,14 +1228,6 @@ class ModelRunner:
             kwargs["get_embedding"] = True
             
         print("[ModelRunner::forward_extend] model.forward called")
-        
-        # pre_len_rt = forward_batch.input_ids.shape[0]
-        # # try to find prefix with max length in storage
-        # if self.enable_kvstore:
-        #     print(f"{forward_batch.seq_lens.shape[0]=}, {len(forward_batch.input_ids)=}")
-        #     for i in range(forward_batch.seq_lens.shape[0]):
-        #         pre_len_rt = forward_batch.input_ids[i].shape[0]
-        #         max_pre_len = self.kvstore.probe_max_prefix(forward_batch.input_ids, pre_len_rt)
         
         return self.model.forward(
             forward_batch.input_ids,

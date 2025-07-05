@@ -206,7 +206,10 @@ class TorchNativeAttnBackend(AttentionBackend):
     ):
 
         print("=" * 80)
-        print("[forward_extend] called")
+        print("[TorchNativeAttnBackend::forward_extend] called with stack trace:")
+        import inspect
+        for i, frame in enumerate(inspect.stack()):
+            print(f"{frame.filename}:{frame.lineno} - {frame.function}")
         print(f"→ layer.layer_id: {layer.layer_id}")
         print(f"→ forward_mode: {forward_batch.forward_mode}")
         print(f"→ batch_size: {forward_batch.batch_size}")
@@ -221,8 +224,8 @@ class TorchNativeAttnBackend(AttentionBackend):
             print(f"→ prefix_len_extra:")
             for i in range(forward_batch.batch_size):
                 print(f"req[{i}]: {forward_batch.prefix_lens_extra[i]}")
-            print(f"→ out_cache_loc shape: {forward_batch.out_cache_loc.shape[0]}")
-            print(f"→ out_cache_loc_for_kvstore shape: {forward_batch.out_cache_loc_for_kvstore.shape[0]}")
+            print(f"→ {forward_batch.out_cache_loc.shape=}")
+            print(f"→ {forward_batch.out_cache_loc_for_kvstore.shape=}")
         print(f"→ k shape: {k.shape}")
         print(f"→ v shape: {v.shape}")
         print(f"→ extend_prefix_lens: {forward_batch.extend_prefix_lens_cpu}")
@@ -233,18 +236,32 @@ class TorchNativeAttnBackend(AttentionBackend):
             o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
         else:
             o = torch.empty_like(q)
+        
+        if self.enable_kvstore:
+            loc_idx = 0
+            for i, kv_future in enumerate(forward_batch.kv_futures):
+                if kv_future is not None:
+                    assert forward_batch.prefix_lens_extra[i] > 0, \
+                        f"kv_future is not None but {forward_batch.prefix_lens_extra[i]=}"
+                    fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_len, head_num, head_dim]
 
+                    k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_len, head_num, head_dim]
+                    v_fetched = fetched_kv[1, layer.layer_id]
+                    assert k_fetched.shape == v_fetched.shape, \
+                        f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
+                        
+                    forward_batch.token_to_kv_pool.set_kv_buffer(
+                        layer,
+                        forward_batch.out_cache_loc_for_kvstore[loc_idx:loc_idx + forward_batch.prefix_lens_extra[i]],
+                        k_fetched[-forward_batch.prefix_lens_extra[i]:],
+                        v_fetched[-forward_batch.prefix_lens_extra[i]:],
+                    )
+                    loc_idx += forward_batch.prefix_lens_extra[i]
+                else:
+                    assert forward_batch.prefix_lens_extra[i] == 0, \
+                        f"kv_future is None but prefix_lens_extra[{i}] = {forward_batch.prefix_lens_extra[i]}"
+                    
         if save_kv_cache:
-            # save kv_cahce for kv tensor from kv storage
-            if layer.layer_id == self.layer_num - 1:
-                kv_tensors = [self.kvstore.wait_for_kv(kv_future) for kv_future in forward_batch.kv_futures]
-                self.total_kv_tensor = torch.cat(kv_tensors, dim=0)
-            # wait for result of db fetching
-            # concat kv tensor
-            forward_batch.token_to_kv_pool.set_kv_buffer(
-                layer, 
-            )
-            # save kv_cache for kv tensor computed by attention backend
             forward_batch.token_to_kv_pool.set_kv_buffer(
                 layer, forward_batch.out_cache_loc, k, v
             )

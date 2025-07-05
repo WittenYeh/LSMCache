@@ -227,11 +227,9 @@ class RadixCache(BasePrefixCache):
             key=key, 
             min_length=prefix_len_rt,
             max_length=len(key),
-            # prefix_len_rt=prefix_len_rt
         )
         
         prefix_len_extra = prefix_len_kvs - prefix_len_rt
-        # prefix_indices = prefix_indices_rt + prefix_len_extra * [-1] # placeholder
         prefix_indices = torch.cat(
             [prefix_indices_rt, torch.full((prefix_len_extra,), -1, dtype=torch.int64, device=self.device)]
         )
@@ -262,6 +260,13 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
 
+        if self.kvstore:
+            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+            self.kvstore.put_prefix_kv(
+                key=token_ids,
+                kv_tensor=kv_tensor,
+            )
+        
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
             page_aligned_kv_indices = kv_indices[:page_aligned_len].clone()
