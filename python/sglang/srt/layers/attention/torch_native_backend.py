@@ -250,6 +250,22 @@ class TorchNativeAttnBackend(AttentionBackend):
                     assert k_fetched.shape == v_fetched.shape, \
                         f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
                         
+                    if forward_batch.prefix_lens_rt[i] > 0:
+                        req_id = forward_batch.req_pool_indices[i]
+                        in_memory_indices = forward_batch.req_to_token_pool.req_to_token[req_id, :forward_batch.prefix_lens_rt[i]]
+
+                        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)[in_memory_indices]
+                        v_cache = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)[in_memory_indices]
+
+                        assert torch.equal(
+                            k_cache,
+                            k_fetched[:forward_batch.prefix_lens_rt[i]],
+                        ), f"fetched kv cache mismatch for req {i}: {k_cache.shape=} vs {k_fetched[:forward_batch.prefix_lens_rt[i]].shape}"
+                        assert torch.equal(
+                            v_cache,
+                            v_fetched[:forward_batch.prefix_lens_rt[i]],
+                        ), f"fetched kv cache mismatch for req {i}: {v_cache.shape=} vs {v_fetched[:forward_batch.prefix_lens_rt[i]].shape}"
+                        
                     forward_batch.token_to_kv_pool.set_kv_buffer(
                         layer,
                         forward_batch.out_cache_loc_for_kvstore[loc_idx:loc_idx + forward_batch.prefix_lens_extra[i]],
