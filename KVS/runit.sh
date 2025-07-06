@@ -8,7 +8,7 @@ max_new_tokens=8
 rm -rf db
 
 # origin sglang with torch_native backend
-test.py --num-requests $num_requests \
+python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --output-file output.txt \
