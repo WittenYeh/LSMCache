@@ -18,8 +18,6 @@ class TorchNativeAttnBackend(AttentionBackend):
     def __init__(self, model_runner: ModelRunner):
         super().__init__()
 
-        print("[TorchNativeAttnBackend] initialize")
-
         self.forward_metadata = None
         self.device = model_runner.device
         
@@ -70,8 +68,6 @@ class TorchNativeAttnBackend(AttentionBackend):
 
         assert seq_lens.shape[0] == extend_prefix_lens.shape[0]
         assert seq_lens.shape[0] == extend_seq_lens.shape[0]
-        
-        # print("[TorchNativeAttnBackend::_run_sdpa_forward_extend]: query.shape = ", query.shape)
 
         # [num_tokens, num_heads, head_size] -> [num_heads, num_tokens, head_size]
         query = query.movedim(0, query.dim() - 2)
@@ -101,10 +97,6 @@ class TorchNativeAttnBackend(AttentionBackend):
             # index for each token in the sequence.
             req_pool_idx = req_pool_indices[seq_idx]
             per_req_tokens = req_to_token[req_pool_idx, :seq_len_kv]
-
-            # print("[TorchNativeAttnBackend::_run_sdpa_forward_extend]: seq_len_kv=", per_req_tokens.shape)
-            # print("[TorchNativeAttnBackend::_run_sdpa_forward_extend]: per_req_tokens.shape=", per_req_tokens.shape)
-            # print("[TorchNativeAttnBackend::_run_sdpa_forward_extend]: per_req_tokens=", per_req_tokens)
             
             per_req_key = k_cache[per_req_tokens].movedim(0, query.dim() - 2)
             per_req_value = v_cache[per_req_tokens].movedim(0, query.dim() - 2)
@@ -204,34 +196,6 @@ class TorchNativeAttnBackend(AttentionBackend):
         forward_batch: ForwardBatch,
         save_kv_cache=True,
     ):
-
-        print("=" * 80)
-        print("[TorchNativeAttnBackend::forward_extend] called with stack trace:")
-        import inspect
-        for i, frame in enumerate(inspect.stack()):
-            print(f"{frame.filename}:{frame.lineno} - {frame.function}")
-        print(f"→ layer.layer_id: {layer.layer_id}")
-        print(f"→ forward_mode: {forward_batch.forward_mode}")
-        print(f"→ batch_size: {forward_batch.batch_size}")
-        print(f"→ input token count: {q.shape[0]}")
-        if self.enable_kvstore:
-            print(f"→ prefix_len_rt:")
-            for i in range(forward_batch.batch_size):
-                print(f"req[{i}]: {forward_batch.prefix_lens_rt[i]}")
-            print(f"→ prefix_len_kvs:")
-            for i in range(forward_batch.batch_size):
-                print(f"req[{i}]: {forward_batch.prefix_lens_kvs[i]}")
-            print(f"→ prefix_len_extra:")
-            for i in range(forward_batch.batch_size):
-                print(f"req[{i}]: {forward_batch.prefix_lens_extra[i]}")
-            print(f"→ {forward_batch.out_cache_loc.shape=}")
-            print(f"→ {forward_batch.out_cache_loc_for_kvstore.shape=}")
-        print(f"→ k shape: {k.shape}")
-        print(f"→ v shape: {v.shape}")
-        print(f"→ extend_prefix_lens: {forward_batch.extend_prefix_lens_cpu}")
-        print(f"→ extend_seq_lens: {forward_batch.extend_seq_lens_cpu}")
-        print("=" * 80)
-
         if layer.qk_head_dim != layer.v_head_dim:
             o = q.new_empty((q.shape[0], layer.tp_q_head_num * layer.v_head_dim))
         else:
@@ -249,22 +213,6 @@ class TorchNativeAttnBackend(AttentionBackend):
                     v_fetched = fetched_kv[1, layer.layer_id]
                     assert k_fetched.shape == v_fetched.shape, \
                         f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
-                        
-                    if forward_batch.prefix_lens_rt[i] > 0:
-                        req_id = forward_batch.req_pool_indices[i]
-                        in_memory_indices = forward_batch.req_to_token_pool.req_to_token[req_id, :forward_batch.prefix_lens_rt[i]]
-
-                        k_cache = forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id)[in_memory_indices]
-                        v_cache = forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id)[in_memory_indices]
-
-                        assert torch.equal(
-                            k_cache,
-                            k_fetched[:forward_batch.prefix_lens_rt[i]],
-                        ), f"fetched kv cache mismatch for req {i}: {k_cache.shape=} vs {k_fetched[:forward_batch.prefix_lens_rt[i]].shape}"
-                        assert torch.equal(
-                            v_cache,
-                            v_fetched[:forward_batch.prefix_lens_rt[i]],
-                        ), f"fetched kv cache mismatch for req {i}: {v_cache.shape=} vs {v_fetched[:forward_batch.prefix_lens_rt[i]].shape}"
                         
                     forward_batch.token_to_kv_pool.set_kv_buffer(
                         layer,

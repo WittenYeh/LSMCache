@@ -946,7 +946,6 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         kvstore: Optional[KVStorage] = None
     ):
         return_logprob = any(req.return_logprob for req in reqs)
-        print(f"[ScheduleBatch::init_new] {kvstore=}")
         return cls(
             reqs=reqs,
             req_to_token_pool=req_to_token_pool,
@@ -1300,9 +1299,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.req_pool_indices = req_pool_indices_tensor
         self.seq_lens = seq_lens_tensor
         self.out_cache_loc = out_cache_loc
-        print(f"[ScheduleBatch::prepare_for_extend] {self.kvstore=}")
         if self.kvstore:
-            print(f"[ScheduleBatch::prepare_for_extend] {out_cache_loc_for_kvstore=} {prefix_lens_extra=} {prefix_lens_rt=} {prefix_lens_kvs=} {prefix_lens_extra=}")
             self.out_cache_loc_for_kvstore = out_cache_loc_for_kvstore
             self.prefix_lens_rt = prefix_lens_rt
             self.prefix_lens_kvs = prefix_lens_kvs
@@ -1709,7 +1706,6 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             self.spec_info.merge_batch(other.spec_info)
 
     def get_model_worker_batch(self) -> ModelWorkerBatch:
-        print("[ScheduleBatch::get_model_worker_batch] function called")
         if self.forward_mode.is_decode_or_idle():
             extend_seq_lens = extend_prefix_lens = extend_logprob_start_lens = None
         else:

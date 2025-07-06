@@ -204,8 +204,6 @@ class TpModelWorker:
             )
 
         if self.pp_group.is_last_rank:
-            print("[TpModelWorker::forward_batch_generation] call model_runner.forward")
-            
             logits_output, can_run_cuda_graph = self.model_runner.forward(
                 forward_batch, pp_proxy_tensors=pp_proxy_tensors
             )

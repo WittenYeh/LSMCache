@@ -227,7 +227,6 @@ class ModelRunner:
         
         self.kvstore = None
         if server_args.enable_kvstore:
-            print("[ModelRunner] Initializing KVStore...")
             self.kvstore = KVStorage(
                 dtype=model_config.dtype,
                 head_num=model_config.num_key_value_heads,
@@ -561,7 +560,6 @@ class ModelRunner:
         monkey_patch_isinstance_for_vllm_base_layer()
 
         with self.memory_saver_adapter.region():
-            # print("[ModelRunner::load_model] called `get_model` function")
             self.model = get_model(
                 model_config=self.model_config,
                 load_config=self.load_config,
@@ -947,10 +945,7 @@ class ModelRunner:
                 "Not enough memory. Please try to increase --mem-fraction-static."
             )
 
-        if self.req_to_token_pool is None:
-            
-            print("[ModelRunner::init_memory_pool] initialize req_to_token_pool")
-            
+        if self.req_to_token_pool is None:            
             self.req_to_token_pool = ReqToTokenPool(
                 size=max_num_reqs,
                 max_context_len=self.model_config.context_len + 4,
@@ -1019,10 +1014,7 @@ class ModelRunner:
         # TODO[WittenYeh] try to delete this assertion
         assert self.token_to_kv_pool_allocator is None
 
-        if self.token_to_kv_pool_allocator is None:
-            
-            print("[ModelRunner::init_memory_pool] initialize token_to_kv_pool_allocator")
-            
+        if self.token_to_kv_pool_allocator is None:            
             if self.page_size == 1:
                 self.token_to_kv_pool_allocator = TokenToKVPoolAllocator(
                     self.max_total_num_tokens,
@@ -1158,19 +1150,14 @@ class ModelRunner:
             )
 
     def init_cuda_graphs(self):
-        """Capture cuda graphs."""
-        
-        # print("[ModelRunner::init_cuda_graphs] function called")
-        
+        """Capture cuda graphs."""       
         self.cuda_graph_runner = None
 
         if not self.is_generation:
             # TODO: Currently, cuda graph only captures decode steps, which only exists for generation models
-            # print("[ModelRunner::init_cuda_graphs] cuda graph is generated")
             return
 
         if self.server_args.disable_cuda_graph:
-            # print("[ModelRunner::init_cuda_graphs] disable cuda graph")
             return
 
         tic = time.perf_counter()
@@ -1196,8 +1183,6 @@ class ModelRunner:
         self, forward_batch: ForwardBatch, pp_proxy_tensors=None
     ) -> LogitsProcessorOutput:
         self.attn_backend.init_forward_metadata(forward_batch)
-        
-        print("[ModelRunner::forward_decode] called")
         
         # FIXME: add pp_proxy_tensors arg to all models
         kwargs = {}
@@ -1226,8 +1211,6 @@ class ModelRunner:
             kwargs["input_embeds"] = forward_batch.input_embeds.bfloat16()
         if not self.is_generation:
             kwargs["get_embedding"] = True
-            
-        print("[ModelRunner::forward_extend] model.forward called")
         
         return self.model.forward(
             forward_batch.input_ids,

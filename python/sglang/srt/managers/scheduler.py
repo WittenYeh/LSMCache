@@ -197,8 +197,6 @@ class Scheduler(
         pp_rank: int,
         dp_rank: Optional[int],
     ):
-        print("[Scheduler] initialize")
-        
         # Parse args
         self.server_args = server_args
         self.tp_rank = tp_rank
@@ -501,8 +499,6 @@ class Scheduler(
             self.server_args.disaggregation_mode
         )
         
-        print("[Scheduler] DisaggregationMode =", self.disaggregation_mode.value)
-        
         assert not (server_args.enable_kvstore and self.disaggregation_mode != DisaggregationMode.NULL), \
             "kv storage architecture does not support disaggregation mode currently."
         
@@ -584,7 +580,6 @@ class Scheduler(
         )
 
     def init_kvstorage(self):
-        print("[Scheduler] Initializing KVStorage")
         self.kvstore = KVStorage(
             dtype=self.model_config.dtype,
             head_num=self.model_config.num_key_value_heads,
@@ -694,14 +689,10 @@ class Scheduler(
             # The prefill requests that are in the middle of kv sending
             self.disagg_prefill_inflight_queue: List[Req] = []
 
-        else:
-            print("[Scheduler] init NULL disaggregation")
 
     @DynamicGradMode()
     def event_loop_normal(self):
         """A normal scheduler loop."""
-        print("[Scheduler::event_loop_normal] function called")
-        
         while True:
             recv_reqs = self.recv_requests()
             self.process_input_requests(recv_reqs)
@@ -710,7 +701,6 @@ class Scheduler(
             self.cur_batch = batch
 
             if batch:
-                print("[Scheduler::event_loop_normal] produce a new batch to run")
                 result = self.run_batch(batch)
                 self.process_batch_result(batch, result)
             else:
@@ -722,10 +712,7 @@ class Scheduler(
 
     @DynamicGradMode()
     def event_loop_overlap(self):
-        """A scheduler loop that overlaps the CPU processing and GPU computation."""
-        
-        print("[Scheduler::event_loop_overlap] function called")
-        
+        """A scheduler loop that overlaps the CPU processing and GPU computation."""        
         self.result_queue = deque()
 
         while True:
@@ -768,9 +755,7 @@ class Scheduler(
             self.last_batch = batch
 
     @DynamicGradMode()
-    def event_loop_pp(self):
-        print("[Scheduler::event_loop_pp] function called")
-        
+    def event_loop_pp(self):        
         """A non-overlap scheduler loop for pipeline parallelism."""
         mbs = [None] * self.pp_size
         last_mbs = [None] * self.pp_size
@@ -952,8 +937,6 @@ class Scheduler(
 
     def process_input_requests(self, recv_reqs: List):
         for recv_req in recv_reqs:
-            print("[Scheduler::process_input_requests] process a recv_req with text: ", recv_req)
-            
             # If it is a health check generation request and there are running requests, ignore it.
             if is_health_check_generate_req(recv_req) and (
                 self.chunked_req is not None or not self.running_batch.is_empty()
@@ -973,8 +956,6 @@ class Scheduler(
         self,
         recv_req: TokenizedGenerateReqInput,
     ):
-        print("[Scheduler::handle_generate_request] recv_req: ", recv_req.input_text)
-        
         # Create a new request
         if (
             recv_req.session_params is None
@@ -1136,7 +1117,6 @@ class Scheduler(
         elif self.disaggregation_mode == DisaggregationMode.DECODE:
             self.disagg_decode_prealloc_queue.add(req)
         else:
-            print("[Scheduler::_add_request_to_queue] add req to waiting_queue")
             self.waiting_queue.append(req)
 
     def _extend_requests_to_queue(self, reqs: List[Req]):
@@ -1226,7 +1206,9 @@ class Scheduler(
             f += f"time: {gap_latency:.2f} "
         else:
             f += f"#queue-req: {len(self.waiting_queue)}"
-
+        if self.kvstore:
+            f += "\n"
+            f += self.kvstore.statistics_str()
         logger.info(f)
 
         if self.enable_metrics:
@@ -1360,8 +1342,6 @@ class Scheduler(
         chunked_req_to_exclude = set()
         
         if self.chunked_req:
-            print("[Scheduler::get_next_batch_to_run] trigger chunked_req processing...")
-            
             # Move the chunked request out of the batch so that we can merge
             # only finished requests to running_batch.
             chunked_req_to_exclude.add(self.chunked_req)
@@ -1394,7 +1374,6 @@ class Scheduler(
         if new_batch is not None:
             # Run prefill first if possible
             ret = new_batch
-            print(f"[Scheduler::get_next_batch_to_run] {new_batch.prefix_lens_rt=}")
         else:
             # Run decode
             if not self.running_batch.is_empty():
@@ -1534,7 +1513,6 @@ class Scheduler(
         # Print stats
         if self.attn_tp_rank == 0:
             self.log_prefill_stats(adder, can_run_list, running_bs)
-        print(f"[Scheduler::get_new_batch_prefill] {self.kvstore=}")
         # Create a new batch
         new_batch = ScheduleBatch.init_new(
             can_run_list,
@@ -1622,7 +1600,6 @@ class Scheduler(
         # Run forward
         if self.is_generation:
             if self.spec_algorithm.is_none():
-                print("[Scheduler::run_batch] none spec_algorithm")
                 model_worker_batch = batch.get_model_worker_batch()
                 if self.pp_group.is_last_rank:
                     logits_output, next_token_ids, can_run_cuda_graph = (

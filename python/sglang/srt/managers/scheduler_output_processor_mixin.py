@@ -35,8 +35,6 @@ class SchedulerOutputProcessorMixin:
         result: Union[GenerationBatchResult, EmbeddingBatchResult],
         launch_done: Optional[threading.Event] = None,
     ):
-        print("[SchedulerOutputProcessorMixin::process_batch_result_prefill] function called")
-        
         skip_stream_req = None
 
         if self.is_generation:
@@ -190,8 +188,6 @@ class SchedulerOutputProcessorMixin:
         result: GenerationBatchResult,
         launch_done: Optional[threading.Event] = None,
     ):
-        print("[SchedulerOutputProcessorMixin::process_batch_result_decode] function called")
-        
         logits_output, next_token_ids, can_run_cuda_graph = (
             result.logits_output,
             result.next_token_ids,

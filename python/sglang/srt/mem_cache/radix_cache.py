@@ -247,7 +247,6 @@ class RadixCache(BasePrefixCache):
 
     def cache_finished_req(self, req: Req):
         """Cache request when it finishes."""
-        print(f"[RadixCache::cache_finished_req] {self.disable=}")
         if self.disable:
             kv_indices = self.req_to_token_pool.req_to_token[
                 req.req_pool_idx, : len(req.origin_input_ids) + len(req.output_ids) - 1
@@ -290,7 +289,6 @@ class RadixCache(BasePrefixCache):
 
     def cache_unfinished_req(self, req: Req):
         """Cache request when it is unfinished."""
-        print(f"[RadixCache::cache_unfinished_req] {self.disable=}")
         if self.disable:
             return
 

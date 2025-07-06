@@ -7,12 +7,29 @@ import os
 from concurrent.futures import ThreadPoolExecutor, Future, TimeoutError
 from typing import Optional
 import threading
-
-import threading
+from dataclasses import dataclass, field
+import time
 
 class KVStorage:
     _instance = None
     _lock = threading.Lock()
+    
+    @dataclass
+    class Statistics:
+        n_prefix_probes: int = 0
+        n_prefix_puts: int = 0
+        
+        n_db_gets: int = 0
+        n_db_puts: int = 0
+        
+        t_db_get: float = 0.0 
+        t_db_put: float = 0.0 
+        
+        n_wait_for_kv: int = 0
+        t_wait_for_kv: float = 0.0 
+        
+        n_executer_gets: int = 0
+        t_executer_get: float = 0.0
 
     def __new__(cls, *args, **kwargs):
         with cls._lock:
@@ -37,11 +54,7 @@ class KVStorage:
         executor_worker_num: int = 4,
         db_path: str = "db",
     ):
-        import inspect
-        for i in inspect.stack():
-            print(f"{i.filename}:{i.lineno} - Function: {i.function}")
         print(f"[KVStorage::__init__] Initializing KVStorage with dtype={dtype}, kvtensor shape=({2}, {layer_num}, seq_len, {head_num}, {head_dim})")
-
         if getattr(self, '_initialized', False):
             return
         self._initialized = True
@@ -58,17 +71,23 @@ class KVStorage:
         assert open_status
 
         self.executor = ThreadPoolExecutor(max_workers=executor_worker_num)
-
-    def __del__(self):
-        # is it necessary?
-        pass
-        # if hasattr(self, 'db'):
-        #     del self.db
-        #     self.db = None
-        #     print(f"RocksDB instance at '{self.db_path}' closed.")
         
-        # if hasattr(self, 'executor'):
-        #     self.executor.shutdown(wait=True)
+        self.statistics = self.Statistics()
+
+    def statistics_str(self):
+        return (
+            f"[KVStorage] Statistics:\n"
+            f"[Put] Prefix probes count: {self.statistics.n_prefix_probes}, "
+            f"DB puts count: {self.statistics.n_prefix_puts}, "
+            f"Avg DB put time: {self.statistics.t_db_put / max(1, self.statistics.n_db_puts):.6f} seconds\n"
+            f"[Get] Prefix probes count: {self.statistics.n_prefix_probes}, "
+            f"DB gets count: {self.statistics.n_db_gets}, "
+            f"Avg DB get time: {self.statistics.t_db_get / max(1, self.statistics.n_db_gets):.6f} seconds\n"
+            f"[Wait] Wait for KV count: {self.statistics.n_wait_for_kv}, "
+            f"Avg wait time: {self.statistics.t_wait_for_kv / max(1, self.statistics.n_wait_for_kv):.6f} seconds\n"
+            f"[Executer] Executer gets count: {self.statistics.n_executer_gets}, "
+            f"Avg executer get time: {self.statistics.t_executer_get / max(1, self.statistics.n_executer_gets):.6f} seconds\n"
+        )
 
     def _make_key(self, key: List[int]) -> bytes:
         """Prefix bytes → RocksDB key"""
@@ -85,19 +104,19 @@ class KVStorage:
         kv_tensor: torch.Tensor
     ):
         required_shape = (2, self.layer_num, len(key), self.head_num, self.head_dim)
-        if kv_tensor.shape != required_shape:
-            # print shapes
-            print(f"[KVStorage::put_prefix_kv] {required_shape=}")
-            print(f"[KVStorage::put_prefix_kv] {kv_tensor.shape=}")
-            raise ValueError("invalid shape of kv_tensor")
-        print(f"[KVStorage::put_prefix_kv] Storing {kv_tensor.shape=}")
+        assert kv_tensor.shape == required_shape, f"{kv_tensor.shape=} does not match {required_shape=}"
+        self.statistics.n_prefix_puts += 1
+        start = time.time()
         for L in range(1, len(key) + 1):
             prefix_ids = key[:L]  # Prefix of length L
             prefix_tensor = kv_tensor[:, :, :L, :, :]
             db_key = self._make_key(prefix_ids)
             value = prefix_tensor.to(torch.float32).cpu().numpy().tobytes()
             put_status = self.db.put(db_key, value)
+            self.statistics.n_db_puts += 1
             assert put_status
+        end = time.time()   
+        self.statistics.t_db_put += (end - start)
 
     def probe_max_prefix(
         self, 
@@ -105,25 +124,32 @@ class KVStorage:
         min_length: int,
         max_length: int
     ) -> Tuple[int, Optional[Future]]:
+        self.statistics.n_prefix_probes += 1
         matched_pre_len = min_length
-        for pre_len in range(min_length + 1, max_length + 1):
+        start = time.time()
+        for pre_len in range(max_length + 1, min_length + 1, -1):
             db_key = self._make_key(key[:pre_len])
             result = self.db.get(db_key)
+            self.statistics.n_db_gets += 1
             if result is None:
                 break
             else:
                 matched_pre_len = pre_len
-        print(f"[KVStorage::probe_max_prefix] {matched_pre_len=} for {len(key)=} with {min_length=} and {max_length=}")
+        end = time.time()
+        self.statistics.t_db_get += (end - start)
         if matched_pre_len > min_length:
             matched_key = key[:matched_pre_len]
             
+            self.statistics.n_executer_gets += 1
+            start = time.time()
             # issue a worker thread to perform _rocksdb_get
             kv_future: Future = self.executor.submit(
                 self._rocksdb_get,
                 matched_key,
                 torch.device("cuda")
             )
-                
+            end = time.time()
+            self.statistics.t_executer_get += (end - start)
             return matched_pre_len, kv_future
         else:
             return matched_pre_len, None
@@ -150,13 +176,13 @@ class KVStorage:
         kv_future: Future,
         timeout: Optional[float] = None,  # seconds; None = wait forever
     ) -> torch.Tensor:
+        self.statistics.n_wait_for_kv += 1
+        start = time.time()
         kv_tensor = kv_future.result(timeout=timeout)
         required_shape = (2, self.layer_num, kv_tensor.shape[2], self.head_num, self.head_dim)
-        if kv_tensor.shape != required_shape:
-            # print shapes
-            print(f"[KVStorage::wait_for_kv] {required_shape=}")
-            print(f"[KVStorage::wait_for_kv] {kv_tensor.shape=}")
-            raise ValueError("invalid shape of kv_tensor")
+        assert kv_tensor.shape == required_shape, f"{kv_tensor.shape=} does not match {required_shape=}"
+        end = time.time()
+        self.statistics.t_wait_for_kv += (end - start)
         return kv_tensor
         
         
@@ -168,7 +194,7 @@ if __name__ == "__main__":
     head_dim = 4
     layer_num = 8
     kvs = KVStorage(
-        dtype=torch.float16,
+        dtype=torch.bfloat16,
         head_num=head_num,
         head_dim=head_dim,
         layer_num=layer_num,
@@ -177,12 +203,12 @@ if __name__ == "__main__":
     )
     
     key = [1, 2, 3, 4, 5]
-    kv_tensor = torch.randn(2, layer_num, len(key), head_num, head_dim, dtype=torch.float16)
+    kv_tensor = torch.randn(2, layer_num, len(key), head_num, head_dim, dtype=torch.bfloat16)
     
-    kvs.put_prefix_kv(torch.tensor(key, dtype=torch.int32), kv_tensor)
+    kvs.put_prefix_kv(key, kv_tensor)
     print(f"Stored kv_tensor with shape {kv_tensor.shape} for key {key}")
     matched_pre_len, kv_future = kvs.probe_max_prefix(
-        torch.tensor(key, dtype=torch.int32), 
+        key, 
         min_length=0, 
         max_length=len(key)
     )
@@ -193,7 +219,7 @@ if __name__ == "__main__":
     
 
     matched_pre_len, kv_future = kvs.probe_max_prefix(
-        torch.tensor([1, 2, 3], dtype=torch.int32), 
+        [1, 2, 3], 
         min_length=0, 
         max_length=3
     )
