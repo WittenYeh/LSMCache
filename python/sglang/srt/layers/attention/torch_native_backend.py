@@ -226,9 +226,14 @@ class TorchNativeAttnBackend(AttentionBackend):
                         f"kv_future is None but prefix_lens_extra[{i}] = {forward_batch.prefix_lens_extra[i]}"
                     
         if save_kv_cache:
-            forward_batch.token_to_kv_pool.set_kv_buffer(
-                layer, forward_batch.out_cache_loc[:-sum(forward_batch.prefix_lens_extra)], k, v
-            )
+            if self.enable_kvstore and sum(forward_batch.prefix_lens_extra) > 0:
+                forward_batch.token_to_kv_pool.set_kv_buffer(
+                    layer, forward_batch.out_cache_loc[:-sum(forward_batch.prefix_lens_extra)], k, v
+                )
+            else: 
+                forward_batch.token_to_kv_pool.set_kv_buffer(
+                    layer, forward_batch.out_cache_loc, k, v
+                )
             
         
         use_gqa = layer.tp_q_head_num != layer.tp_k_head_num

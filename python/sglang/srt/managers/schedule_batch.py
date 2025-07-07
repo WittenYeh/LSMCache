@@ -1280,8 +1280,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         if self.token_to_kv_pool_allocator.page_size == 1:
             # allocate memory for extend tokens
             if not self.kvstore:
+                print(f"[ScheduleBatch] {extend_num_tokens=}")
                 out_cache_loc = self.alloc_token_slots(extend_num_tokens)
             else:
+                print(f"[ScheduleBatch] {extend_num_tokens=}, {prefix_lens_extra_num_tokens=}")
                 out_cache_loc = self.alloc_token_slots(extend_num_tokens + prefix_lens_extra_num_tokens)
                 out_cache_loc_for_kvstore = out_cache_loc[-prefix_lens_extra_num_tokens:]
         else:

@@ -311,7 +311,6 @@ class RadixCache(BasePrefixCache):
             page_aligned_len = len(kv_indices)
             page_aligned_kv_indices = kv_indices.clone()
         page_aligned_token_ids = token_ids[:page_aligned_len]
-
         # Radix Cache takes one ref in memory pool
         new_prefix_len = self.insert(page_aligned_token_ids, page_aligned_kv_indices)
         self.token_to_kv_pool_allocator.free(
@@ -359,6 +358,15 @@ class RadixCache(BasePrefixCache):
                 break
             if x.lock_ref > 0:
                 continue
+
+            # print(f"[RadixCache::evict] Evicting {len(x.value)=}, {type(x.value[0])=} {x.value=}")
+            # if self.kvstore:
+            #     kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(x.value)
+            #     for token_ids in x.value:
+            #         self.kvstore.put_prefix_kv(
+            #             key=token_ids,
+            #             kv_tensor=kv_tensor,
+            #         )
 
             self.token_to_kv_pool_allocator.free(x.value)
             num_evicted += len(x.value)

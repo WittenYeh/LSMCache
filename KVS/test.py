@@ -18,7 +18,7 @@ from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 def start_server(enable_kvstore:bool = False):
     command = f"""
     python3 -m sglang.launch_server \
-    --model-path mistralai/Mistral-7B-v0.1 \
+    --model-path meta-llama/Llama-2-7b-chat-hf \
     --host 0.0.0.0 \
     --disable-overlap-schedule \
     --attention-backend torch_native \
@@ -45,24 +45,21 @@ def generate(prompt, max_new_tokens=32):
     )
     return response.json()
 
-def generate_batch(qas, batch_size=0) -> Generator[ProgramState]:
+def generate_batch(qas) -> Generator[ProgramState]:
     @sgl.function
     def multi_turns(s, qas):
         for qa in qas:
             s += qa["prompt"]
             s += sgl.gen(max_tokens=qa["new_tokens"], ignore_eos=True)
-    if batch_size == 0:
-        batch_size = len(qas)
-    for i in range(0, len(qas), batch_size):
-        batch_qas = qas[i:i + batch_size]
-        responses = multi_turns.run_batch(
-            batch_qas,
-            temperature=0,
-            backend=RuntimeEndpoint(f"http://localhost:30000"),
-            num_threads=4,
-            progress_bar=True,
-        )
-        yield from responses
+
+    responses = multi_turns.run_batch(
+        qas,
+        temperature=0,
+        backend=RuntimeEndpoint(f"http://localhost:30000"),
+        num_threads=4,
+        progress_bar=True,
+    )
+    return responses
 
 TEMPLATES = [
     "What are the benefits of {}?",
@@ -181,7 +178,7 @@ if __name__ == "__main__":
                                 turns=args.turns)
 
     start = time.time()
-    response_list = list(generate_batch(multi_qas, batch_size=args.batch_size))
+    response_list = list(generate_batch(multi_qas))
     end = time.time()
     
     print_highlight(f"== Run {args.num_requests} turns of chat with {enable_kvstore=} ==")

@@ -1,11 +1,9 @@
 # number of requests to run
-num_requests=10
+num_requests=100
 # number of tokens in each random prompts, set to 0 to use template prompts
-prompt_token_num=0
+prompt_token_num=32
 # maximum number of new tokens to generate
 max_new_tokens=8
-# batch size for each request, set to 0 for unlimited batch size
-batch_size=0
 
 rm -rf db
 
@@ -13,7 +11,6 @@ rm -rf db
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
-    --batch-size $batch_size \
     --output-file output.txt \
     |& tee test.log
 
@@ -21,7 +18,6 @@ python test.py --num-requests $num_requests \
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
-    --batch-size $batch_size \
     --enable-kvstore \
     --output-file output_kv_warmup.txt \
     |& tee test_kv_warmup.log
@@ -30,7 +26,6 @@ python test.py --num-requests $num_requests \
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
-    --batch-size $batch_size \
     --enable-kvstore \
     --output-file output_kv.txt \
     |& tee test_kv.log

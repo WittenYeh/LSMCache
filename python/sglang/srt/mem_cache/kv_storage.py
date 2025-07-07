@@ -77,7 +77,7 @@ class KVStorage:
     def statistics_str(self):
         return (
             f"[KVStorage] Statistics:\n"
-            f"[Put] Prefix probes count: {self.statistics.n_prefix_probes}, "
+            f"[Put] Prefix put count: {self.statistics.n_prefix_probes}, "
             f"DB puts count: {self.statistics.n_prefix_puts}, "
             f"Avg DB put time: {self.statistics.t_db_put / max(1, self.statistics.n_db_puts):.6f} seconds\n"
             f"[Get] Prefix probes count: {self.statistics.n_prefix_probes}, "
