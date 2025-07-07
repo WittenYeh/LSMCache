@@ -1,3 +1,5 @@
+from typing import Generator, List
+from sglang.lang.interpreter import ProgramState
 from sglang.test.test_utils import is_in_ci, select_sglang_backend
 from sglang.utils import wait_for_server, print_highlight, terminate_process
 from sglang.utils import launch_server_cmd
@@ -10,7 +12,8 @@ import torch
 from transformers import AutoTokenizer
 import string
 import sglang as sgl
-import sglang.srt.mem_cache.kv_storage as kv_storage
+
+from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 
 def start_server(enable_kvstore:bool = False):
     command = f"""
@@ -42,19 +45,20 @@ def generate(prompt, max_new_tokens=32):
     )
     return response.json()
 
-def generate_batch(prompts, max_new_tokens=32, batch_size=None):
+def generate_batch(qas, batch_size=0) -> Generator[ProgramState]:
     @sgl.function
-    def my_function(s, prompt):
-        s += prompt
-        s += sgl.gen(max_tokens=max_new_tokens, ignore_eos=True)
-    if batch_size is None:
-        batch_size = len(prompts)
-    for i in range(0, len(prompts), batch_size):
-        batch_prompts = prompts[i:i + batch_size]
-        responses = my_function.run_batch(
-            batch_prompts,
+    def multi_turns(s, qas):
+        for qa in qas:
+            s += qa["prompt"]
+            s += sgl.gen(max_tokens=qa["new_tokens"], ignore_eos=True)
+    if batch_size == 0:
+        batch_size = len(qas)
+    for i in range(0, len(qas), batch_size):
+        batch_qas = qas[i:i + batch_size]
+        responses = multi_turns.run_batch(
+            batch_qas,
             temperature=0,
-            backend="http://localhost:30000",  # or select_sglang_backend(args)
+            backend=RuntimeEndpoint(f"http://localhost:30000"),
             num_threads=4,
             progress_bar=True,
         )
@@ -94,6 +98,19 @@ def random_prompt(tokenizer, token_num):
         ret += random.choice(cha_set)
     return ret
 
+def gen_arguments(num_requests, tokenizer, prompt_len=0, new_tokens=32, turns=1):
+    multi_qas = [{"qas": []} for _ in range(num_requests)]
+    for i in range(num_requests):
+        qas = multi_qas[i]["qas"]
+        for _ in range(args.turns):
+            qas.append(
+                {
+                    "prompt": random_prompt(tokenizer, prompt_len) if prompt_len > 0 else tempelate_prompt(),
+                    "new_tokens": new_tokens,
+                }
+            )
+    return multi_qas
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -130,6 +147,20 @@ def parse_args():
         default="output.txt",
         help="Output file to save the responses (default: output.txt)",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=0,
+        nargs="?",
+        help="Batch size for generating responses, set to 0 for no batching (default: 0)",
+    )
+    parser.add_argument(        
+        "--turns",
+        type=int,
+        default=1,
+        nargs="?",
+        help="Number of turns in the conversation (default: 1)",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -144,12 +175,13 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 
     
-    if args.prompt_token_num > 0:
-        prompt_list = [random_prompt(tokenizer, args.prompt_token_num) for _ in range(args.num_requests)]
-    else:
-        prompt_list = [tempelate_prompt() for _ in range(args.num_requests)]
+    multi_qas = gen_arguments(args.num_requests, tokenizer, 
+                                prompt_len=args.prompt_token_num,
+                                new_tokens=args.max_new_tokens,
+                                turns=args.turns)
+
     start = time.time()
-    response_list = [generate(prompt, args.max_new_tokens) for prompt in prompt_list]
+    response_list = list(generate_batch(multi_qas, batch_size=args.batch_size))
     end = time.time()
     
     print_highlight(f"== Run {args.num_requests} turns of chat with {enable_kvstore=} ==")
@@ -157,10 +189,10 @@ if __name__ == "__main__":
     print_highlight(f"== Average time per request: {(end - start) / args.num_requests:.2f} seconds ==")
     
     with open(output_file, "w") as f:
-        for i, (prompt, response) in enumerate(zip(prompt_list, response_list)):
+        for i, (prompt, response) in enumerate(zip(multi_qas, response_list)):
             f.write(f"=== Turn {i} ===\n")
-            f.write(f"Prompt: {prompt}\n")
-            f.write(f"Response: {response['text']}\n\n")
+            f.write(f"Prompt: {prompt['qas'][0]['prompt']}\n")
+            f.write(f"Response: {response.text().split("\n")[-1]}\n\n")
         f.write(f"Average Latency: {(end - start) / args.num_requests:.2f} seconds\n")
     print_highlight(f"Output saved to {output_file}")
 

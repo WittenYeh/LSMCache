@@ -8,6 +8,7 @@ import os
 import random
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -137,7 +138,8 @@ def http_request(
             data = bytes(dumps(json), encoding="utf-8")
 
         try:
-            resp = urllib.request.urlopen(req, data=data, cafile=verify)
+            context = ssl.create_default_context(cafile=verify)
+            resp = urllib.request.urlopen(req, data=data, context=context)
             return HttpResponse(resp)
         except urllib.error.HTTPError as e:
             return HttpResponse(e)

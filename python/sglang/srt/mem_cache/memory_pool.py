@@ -197,6 +197,10 @@ class TokenToKVPoolAllocator:
         return self._kvcache
 
     def alloc(self, need_size: int):
+        import inspect
+        print(f"[TokenToKVPoolAllocator::alloc] called with {need_size=}")
+        for frame in inspect.stack():
+            print(f"{frame.filename}:{frame.lineno} - {frame.function}")
         if need_size > len(self.free_slots):
             return None
 
@@ -205,6 +209,10 @@ class TokenToKVPoolAllocator:
         return select_index
 
     def free(self, free_index: torch.Tensor):
+        import inspect
+        print(f"[TokenToKVPoolAllocator::free] called with {free_index=}")
+        for frame in inspect.stack():
+            print(f"{frame.filename}:{frame.lineno} - {frame.function}")
         if free_index.numel() == 0:
             return
 
@@ -426,7 +434,7 @@ class MHATokenToKVPool(KVCache):
         else:
             self.k_buffer[layer_id - self.start_layer][loc] = cache_k
             self.v_buffer[layer_id - self.start_layer][loc] = cache_v
-
+        print(f"[MHATokenToKVPool::set_kv_buffer] {layer_id=} {loc=} {cache_k.shape=} {cache_v.shape=}")
 
 @torch.compile
 def fused_downcast(

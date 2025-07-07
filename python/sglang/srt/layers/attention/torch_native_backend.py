@@ -227,7 +227,7 @@ class TorchNativeAttnBackend(AttentionBackend):
                     
         if save_kv_cache:
             forward_batch.token_to_kv_pool.set_kv_buffer(
-                layer, forward_batch.out_cache_loc, k, v
+                layer, forward_batch.out_cache_loc[:-sum(forward_batch.prefix_lens_extra)], k, v
             )
             
         

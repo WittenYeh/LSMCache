@@ -111,7 +111,10 @@ class KVStorage:
             prefix_ids = key[:L]  # Prefix of length L
             prefix_tensor = kv_tensor[:, :, :L, :, :]
             db_key = self._make_key(prefix_ids)
-            value = prefix_tensor.to(torch.float32).cpu().numpy().tobytes()
+            if self.dtype in [torch.float16, torch.float32, torch.float64]:
+                value = prefix_tensor.to(self.dtype).cpu().numpy().tobytes()
+            else:
+                value = prefix_tensor.to(torch.float32).cpu().numpy().tobytes()
             put_status = self.db.put(db_key, value)
             self.statistics.n_db_puts += 1
             assert put_status
@@ -161,15 +164,16 @@ class KVStorage:
     ) -> torch.Tensor:
         # disk to cpu          
         kv_cpu_raw = self.db.get(self._make_key(matched_key))   
-        # cpu reshape
-        kv_np = np.frombuffer(kv_cpu_raw, dtype=np.float32).reshape(
+
+        kv_tensor = torch.frombuffer(
+            kv_cpu_raw, 
+            dtype=self.dtype if self.dtype in [torch.float16, torch.float32, torch.float64] else torch.float32,
+            count=2 * self.layer_num * len(matched_key) * self.head_num * self.head_dim,
+        ).reshape(
             2, self.layer_num, len(matched_key), self.head_num, self.head_dim
         )
-        kv_tensor = torch.from_numpy(kv_np.copy())
-        # cpu to gpu
-        kv_tensor = kv_tensor.to(device=device, dtype=self.dtype)
                 
-        return kv_tensor
+        return kv_tensor.to(self.dtype).to(device)
 
     def wait_for_kv(
         self,
