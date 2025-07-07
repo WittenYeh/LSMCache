@@ -260,12 +260,12 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
 
-        if self.kvstore:
-            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
-            self.kvstore.put_prefix_kv(
-                key=token_ids,
-                kv_tensor=kv_tensor,
-            )
+        # if self.kvstore:
+        #     kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+        #     self.kvstore.put_prefix_kv(
+        #         key=token_ids,
+        #         kv_tensor=kv_tensor,
+        #     )
         
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
@@ -297,12 +297,12 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
 
-        if self.kvstore:
-            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
-            self.kvstore.put_prefix_kv(
-                key=token_ids,
-                kv_tensor=kv_tensor,
-            )
+        # if self.kvstore:
+        #     kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+        #     self.kvstore.put_prefix_kv(
+        #         key=token_ids,
+        #         kv_tensor=kv_tensor,
+        #     )
 
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
@@ -359,14 +359,12 @@ class RadixCache(BasePrefixCache):
             if x.lock_ref > 0:
                 continue
 
-            # print(f"[RadixCache::evict] Evicting {len(x.value)=}, {type(x.value[0])=} {x.value=}")
-            # if self.kvstore:
-            #     kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(x.value)
-            #     for token_ids in x.value:
-            #         self.kvstore.put_prefix_kv(
-            #             key=token_ids,
-            #             kv_tensor=kv_tensor,
-            #         )
+            if self.kvstore:
+                kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(x.value)
+                self.kvstore.put_prefix_kv(
+                    key=x.key,
+                    kv_tensor=kv_tensor,
+                )
 
             self.token_to_kv_pool_allocator.free(x.value)
             num_evicted += len(x.value)
