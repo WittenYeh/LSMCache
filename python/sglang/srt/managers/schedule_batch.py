@@ -982,7 +982,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         return req_pool_indices
 
     def alloc_token_slots(self, num_tokens: int, backup_state: bool = False):
-        print(f"[ScheduleBatch] alloc_token_slots: {num_tokens=}, token_to_kv_pool_allocator available: {self.token_to_kv_pool_allocator.available_size()}/{self.token_to_kv_pool_allocator.size}")
+        print(f"[ScheduleBatch] token_to_kv_pool_allocator available: {self.token_to_kv_pool_allocator.available_size()}/{self.token_to_kv_pool_allocator.size}")
         if self.token_to_kv_pool_allocator.available_size() < num_tokens:
             if self.tree_cache is not None:
                 self.tree_cache.evict(num_tokens)

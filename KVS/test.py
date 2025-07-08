@@ -15,13 +15,14 @@ import sglang as sgl
 
 from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 
-def start_server(enable_kvstore:bool = False):
+def start_server(enable_kvstore:bool = False, mem_fraction_static:float = 0.9):
     command = f"""
     python3 -m sglang.launch_server \
     --model-path meta-llama/Llama-2-7b-chat-hf \
     --host 0.0.0.0 \
     --disable-overlap-schedule \
     --attention-backend torch_native \
+    --mem-fraction-static {mem_fraction_static} \
     {"--enable-kvstore" if enable_kvstore else ""}
     """
 
@@ -45,7 +46,7 @@ def generate(prompt, max_new_tokens=32):
     )
     return response.json()
 
-def generate_batch(qas) -> Generator[ProgramState]:
+def generate_batch(qas) -> List[ProgramState]:
     @sgl.function
     def multi_turns(s, qas):
         for qa in qas:
@@ -158,6 +159,13 @@ def parse_args():
         nargs="?",
         help="Number of turns in the conversation (default: 1)",
     )
+    parser.add_argument(
+        "--mem-fraction-static",
+        type=float,
+        default=0.9,
+        nargs="?",
+        help="Memory fraction for static memory allocation, set to 0.9 by default",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -168,7 +176,7 @@ if __name__ == "__main__":
     
     enable_kvstore = args.enable_kvstore
     output_file = args.output_file
-    server_process, port = start_server(enable_kvstore)
+    server_process, port = start_server(enable_kvstore, args.mem_fraction_static)
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 
     

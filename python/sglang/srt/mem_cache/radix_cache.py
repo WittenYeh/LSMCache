@@ -342,6 +342,19 @@ class RadixCache(BasePrefixCache):
 
     def total_size(self):
         return self._total_size_helper()
+    
+    def _get_kvcache(self, x: TreeNode):
+        # get prefix and kv_tensor from radix tree
+        prefix:List[int] = x.key
+        kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(x.value)
+        while x.parent is not None:
+            x = x.parent
+            prefix = x.key + prefix
+            kv_tensor = torch.cat(
+                [self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(x.value), kv_tensor], dim=2
+            )
+            
+        return prefix, kv_tensor
 
     def evict(self, num_tokens: int):
         if self.disable:
@@ -360,9 +373,9 @@ class RadixCache(BasePrefixCache):
                 continue
 
             if self.kvstore:
-                kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(x.value)
+                prefix, kv_tensor = self._get_kvcache(x)
                 self.kvstore.put_prefix_kv(
-                    key=x.key,
+                    key=prefix,
                     kv_tensor=kv_tensor,
                 )
 

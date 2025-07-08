@@ -197,6 +197,7 @@ class TokenToKVPoolAllocator:
         return self._kvcache
 
     def alloc(self, need_size: int):
+        print(f"[TokenToKVPoolAllocator::alloc] Allocating {need_size} slots")
         if need_size > len(self.free_slots):
             return None
 
@@ -205,6 +206,7 @@ class TokenToKVPoolAllocator:
         return select_index
 
     def free(self, free_index: torch.Tensor):
+        print(f"[TokenToKVPoolAllocator::free] Freeing {free_index.numel()} slots")
         if free_index.numel() == 0:
             return
 

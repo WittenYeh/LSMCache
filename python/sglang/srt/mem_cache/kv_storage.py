@@ -103,6 +103,7 @@ class KVStorage:
         # shape: [2, layer_num, pre_len, head_num, head_dim]
         kv_tensor: torch.Tensor
     ):
+        print(f"[KVStorage] Putting prefix KV for key {key} with shape {kv_tensor.shape}")
         required_shape = (2, self.layer_num, len(key), self.head_num, self.head_dim)
         assert kv_tensor.shape == required_shape, f"{kv_tensor.shape=} does not match {required_shape=}"
         self.statistics.n_prefix_puts += 1
@@ -127,6 +128,7 @@ class KVStorage:
         min_length: int,
         max_length: int
     ) -> Tuple[int, Optional[Future]]:
+        print(f"[KVStorage] Probing max prefix for key {key} with range ({min_length}, {max_length})")
         self.statistics.n_prefix_probes += 1
         matched_pre_len = min_length
         start = time.time()
@@ -140,6 +142,7 @@ class KVStorage:
                 matched_pre_len = pre_len
         end = time.time()
         self.statistics.t_db_get += (end - start)
+        print(f"[KVStorage] Probed max prefix length: {matched_pre_len}")
         if matched_pre_len > min_length:
             matched_key = key[:matched_pre_len]
             

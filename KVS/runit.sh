@@ -1,9 +1,11 @@
 # number of requests to run
-num_requests=100
+num_requests=128
 # number of tokens in each random prompts, set to 0 to use template prompts
-prompt_token_num=32
+prompt_token_num=0
 # maximum number of new tokens to generate
 max_new_tokens=8
+# memory limit
+mem_fraction_static=0.55
 
 rm -rf db
 
@@ -11,6 +13,7 @@ rm -rf db
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
+    --mem-fraction-static $mem_fraction_static \
     --output-file output.txt \
     |& tee test.log
 
@@ -18,6 +21,7 @@ python test.py --num-requests $num_requests \
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
+    --mem-fraction-static $mem_fraction_static \
     --enable-kvstore \
     --output-file output_kv_warmup.txt \
     |& tee test_kv_warmup.log
@@ -26,6 +30,7 @@ python test.py --num-requests $num_requests \
 python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
+    --mem-fraction-static $mem_fraction_static \
     --enable-kvstore \
     --output-file output_kv.txt \
     |& tee test_kv.log
