@@ -118,16 +118,16 @@ class KVStorage:
         
     def _probe_max_prefix(
         self,
-        key: torch.Tensor,
+        key: List[int],
         min_length: int,
         max_length: int
     ) -> int:
         matched_pre_len = min_length
         for pre_len in range(max_length, min_length, -1):
             db_key = self._make_key(key[:pre_len])
-            result = self.db.get(db_key)
+            exist = self.db.probe(db_key)
             self.statistics.n_db_gets += 1
-            if result is not None:
+            if exist:
                 matched_pre_len = pre_len
                 break
         return matched_pre_len
@@ -172,7 +172,12 @@ class KVStorage:
         key: List[int],
         kv_tensor: torch.Tensor,
     ):
-        for L in range(1, len(key) + 1):
+        exist_key_len = self._probe_max_prefix(
+            key,
+            min_length=0,
+            max_length=len(key)
+        ) 
+        for L in range(exist_key_len + 1, len(key) + 1):
             prefix_ids = key[:L]  # Prefix of length L
             prefix_tensor = kv_tensor[:, :, L, :, :]
             db_key = self._make_key(prefix_ids)
