@@ -223,7 +223,7 @@ class RadixCache(BasePrefixCache):
         # try to find prefix with max length in storage
         assert self.kvstore, "[RadixCache::kvstore_match_prefix] error"
         
-        prefix_len_kvs, kv_future = self.kvstore.probe_max_prefix(
+        prefix_len_kvs, kv_future = self.kvstore.get_prefix_kv(
             key=key, 
             min_length=prefix_len_rt,
             max_length=len(key),

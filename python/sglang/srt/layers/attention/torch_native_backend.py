@@ -207,18 +207,19 @@ class TorchNativeAttnBackend(AttentionBackend):
                 if kv_future is not None:
                     assert forward_batch.prefix_lens_extra[i] > 0, \
                         f"kv_future is not None but {forward_batch.prefix_lens_extra[i]=}"
-                    fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_len, head_num, head_dim]
+                    fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_lens_extra, head_num, head_dim]
 
-                    k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_len, head_num, head_dim]
+                    k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_lens_extra, head_num, head_dim]
                     v_fetched = fetched_kv[1, layer.layer_id]
                     assert k_fetched.shape == v_fetched.shape, \
                         f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
-                        
+                    assert k_fetched.shape[0] == forward_batch.prefix_lens_extra[i], \
+                        f"fetched kv length {k_fetched.shape[0]} does not match expected {forward_batch.prefix_lens_extra[i]}"
                     forward_batch.token_to_kv_pool.set_kv_buffer(
                         layer,
                         forward_batch.out_cache_loc_for_kvstore[loc_idx:loc_idx + forward_batch.prefix_lens_extra[i]],
-                        k_fetched[-forward_batch.prefix_lens_extra[i]:],
-                        v_fetched[-forward_batch.prefix_lens_extra[i]:],
+                        k_fetched,
+                        v_fetched,
                     )
                     loc_idx += forward_batch.prefix_lens_extra[i]
                 else:

@@ -16,14 +16,14 @@ class KVStorage:
     
     @dataclass
     class Statistics:
-        n_prefix_probes: int = 0
+        n_prefix_gets: int = 0
         n_prefix_puts: int = 0
         
         n_db_gets: int = 0
         n_db_puts: int = 0
         
-        t_db_get: float = 0.0 
-        t_db_put: float = 0.0 
+        t_get: float = 0.0 
+        t_put: float = 0.0 
         
         n_wait_for_kv: int = 0
         t_wait_for_kv: float = 0.0 
@@ -51,7 +51,7 @@ class KVStorage:
         head_num: int,
         head_dim: int,
         layer_num: int,
-        executor_worker_num: int = 4,
+        executor_worker_num: int = 16,
         db_path: str = "db",
     ):
         print(f"[KVStorage::__init__] Initializing KVStorage with dtype={dtype}, kvtensor shape=({2}, {layer_num}, seq_len, {head_num}, {head_dim})")
@@ -77,20 +77,17 @@ class KVStorage:
     def statistics_str(self):
         return (
             f"[KVStorage] Statistics:\n"
-            f"[Put] Prefix put count: {self.statistics.n_prefix_probes}, "
-            f"DB puts count: {self.statistics.n_prefix_puts}, "
-            f"Avg DB put time: {self.statistics.t_db_put / max(1, self.statistics.n_db_puts):.6f} seconds\n"
-            f"[Get] Prefix probes count: {self.statistics.n_prefix_probes}, "
+            f"[Put] Prefix put count: {self.statistics.n_prefix_puts}, "
+            f"DB puts count: {self.statistics.n_db_puts}, "
+            f"Avg prefix put time: {self.statistics.t_put / max(1, self.statistics.n_prefix_puts):.6f} seconds\n"
+            f"[Get] Prefix get count: {self.statistics.n_prefix_gets}, "
             f"DB gets count: {self.statistics.n_db_gets}, "
-            f"Avg DB get time: {self.statistics.t_db_get / max(1, self.statistics.n_db_gets):.6f} seconds\n"
+            f"Avg prefix probe time: {self.statistics.t_get / max(1, self.statistics.n_prefix_gets):.6f} seconds\n"
             f"[Wait] Wait for KV count: {self.statistics.n_wait_for_kv}, "
             f"Avg wait time: {self.statistics.t_wait_for_kv / max(1, self.statistics.n_wait_for_kv):.6f} seconds\n"
-            f"[Executer] Executer gets count: {self.statistics.n_executer_gets}, "
-            f"Avg executer get time: {self.statistics.t_executer_get / max(1, self.statistics.n_executer_gets):.6f} seconds\n"
         )
 
     def _make_key(self, key: List[int]) -> bytes:
-        """Prefix bytes → RocksDB key"""
         if isinstance(key, list):
             assert isinstance(key[0], int), "List keys must contain integers"
             return np.array(key, dtype=np.int32).tobytes()
@@ -99,82 +96,114 @@ class KVStorage:
 
     def put_prefix_kv(
         self, 
-        key: torch.Tensor, 
+        key: List[int],
         # shape: [2, layer_num, pre_len, head_num, head_dim]
         kv_tensor: torch.Tensor
     ):
-        print(f"[KVStorage] Putting prefix KV for key {key} with shape {kv_tensor.shape}")
-        required_shape = (2, self.layer_num, len(key), self.head_num, self.head_dim)
-        assert kv_tensor.shape == required_shape, f"{kv_tensor.shape=} does not match {required_shape=}"
         self.statistics.n_prefix_puts += 1
         start = time.time()
-        for L in range(1, len(key) + 1):
-            prefix_ids = key[:L]  # Prefix of length L
-            prefix_tensor = kv_tensor[:, :, :L, :, :]
-            db_key = self._make_key(prefix_ids)
-            if self.dtype in [torch.float16, torch.float32, torch.float64]:
-                value = prefix_tensor.to(self.dtype).cpu().numpy().tobytes()
-            else:
-                value = prefix_tensor.to(torch.float32).cpu().numpy().tobytes()
-            put_status = self.db.put(db_key, value)
-            self.statistics.n_db_puts += 1
-            assert put_status
+        required_shape = (2, self.layer_num, len(key), self.head_num, self.head_dim)
+        assert kv_tensor.shape == required_shape, f"{kv_tensor.shape=} does not match {required_shape=}"
+        if self.dtype in [torch.float16, torch.float32, torch.float64]:
+            kv_tensor = kv_tensor.to(self.dtype).cpu().numpy()
+        else:
+            kv_tensor = kv_tensor.to(torch.float32).cpu().numpy()
+        self.executor.submit(
+            self._rocksdb_put,
+            key,
+            kv_tensor,
+        )
         end = time.time()   
-        self.statistics.t_db_put += (end - start)
+        self.statistics.t_put += (end - start)
+        
+    def _probe_max_prefix(
+        self,
+        key: torch.Tensor,
+        min_length: int,
+        max_length: int
+    ) -> int:
+        matched_pre_len = min_length
+        for pre_len in range(max_length, min_length, -1):
+            db_key = self._make_key(key[:pre_len])
+            result = self.db.get(db_key)
+            self.statistics.n_db_gets += 1
+            if result is not None:
+                matched_pre_len = pre_len
+                break
+        return matched_pre_len
+            
 
-    def probe_max_prefix(
+    def get_prefix_kv(
         self, 
         key: torch.Tensor, 
         min_length: int,
         max_length: int
     ) -> Tuple[int, Optional[Future]]:
-        print(f"[KVStorage] Probing max prefix for key {key} with range ({min_length}, {max_length})")
-        self.statistics.n_prefix_probes += 1
-        matched_pre_len = min_length
+        self.statistics.n_prefix_gets += 1
         start = time.time()
-        for pre_len in range(max_length + 1, min_length + 1, -1):
-            db_key = self._make_key(key[:pre_len])
-            result = self.db.get(db_key)
-            self.statistics.n_db_gets += 1
-            if result is None:
-                break
-            else:
-                matched_pre_len = pre_len
-        end = time.time()
-        self.statistics.t_db_get += (end - start)
-        print(f"[KVStorage] Probed max prefix length: {matched_pre_len}")
+        matched_pre_len = self._probe_max_prefix(
+            key,
+            min_length=min_length,
+            max_length=max_length
+        )
+        
         if matched_pre_len > min_length:
             matched_key = key[:matched_pre_len]
             
             self.statistics.n_executer_gets += 1
-            start = time.time()
             # issue a worker thread to perform _rocksdb_get
+            # the return value serves prefix [min_length, matched_pre_len]
             kv_future: Future = self.executor.submit(
                 self._rocksdb_get,
                 matched_key,
+                min_length,
                 torch.device("cuda")
             )
             end = time.time()
-            self.statistics.t_executer_get += (end - start)
+            self.statistics.t_get += (end - start)
             return matched_pre_len, kv_future
         else:
+            end = time.time()
+            self.statistics.t_get += (end - start)
             return matched_pre_len, None
+        
+    def _rocksdb_put(
+        self,
+        key: List[int],
+        kv_tensor: torch.Tensor,
+    ):
+        for L in range(1, len(key) + 1):
+            prefix_ids = key[:L]  # Prefix of length L
+            prefix_tensor = kv_tensor[:, :, L, :, :]
+            db_key = self._make_key(prefix_ids)
+            value = prefix_tensor.tobytes()
+            put_status = self.db.put(db_key, value)
+            self.statistics.n_db_puts += 1
+            assert put_status
 
     def _rocksdb_get(
         self,
         matched_key: List[int],
+        min_length: int,
         device: torch.device = torch.device("cuda"),
     ) -> torch.Tensor:
-        # disk to cpu          
-        kv_cpu_raw = self.db.get(self._make_key(matched_key))   
-
-        kv_tensor = torch.frombuffer(
-            kv_cpu_raw, 
-            dtype=self.dtype if self.dtype in [torch.float16, torch.float32, torch.float64] else torch.float32,
-            count=2 * self.layer_num * len(matched_key) * self.head_num * self.head_dim,
-        ).reshape(
-            2, self.layer_num, len(matched_key), self.head_num, self.head_dim
-        )
+        dtype = self.dtype if self.dtype in [torch.float16, torch.float32, torch.float64] else torch.float32
+        kv_tensor = torch.empty(
+            (2, self.layer_num, len(matched_key) - min_length, self.head_num, self.head_dim),
+            dtype=dtype,
+        ) 
+        for L in range(min_length, len(matched_key)):
+            db_key = self._make_key(matched_key[:L+1])
+            kv_cpu_raw = self.db.get(db_key)
+            self.statistics.n_db_gets += 1
+            assert kv_cpu_raw is not None, f"Key {db_key} not found in DB"
+            kv_tensor[:, :, L - min_length, :, :] = torch.frombuffer(
+                kv_cpu_raw, 
+                dtype=dtype,
+                count=2 * self.layer_num * self.head_num * self.head_dim,
+            ).reshape(
+                2, self.layer_num, self.head_num, self.head_dim
+            )
                 
         return kv_tensor.to(self.dtype).to(device)
 
@@ -214,7 +243,7 @@ if __name__ == "__main__":
     
     kvs.put_prefix_kv(key, kv_tensor)
     print(f"Stored kv_tensor with shape {kv_tensor.shape} for key {key}")
-    matched_pre_len, kv_future = kvs.probe_max_prefix(
+    matched_pre_len, kv_future = kvs.get_prefix_kv(
         key, 
         min_length=0, 
         max_length=len(key)
@@ -225,7 +254,7 @@ if __name__ == "__main__":
     assert torch.equal(fetched_kv_tensor.cpu(), kv_tensor.cpu()), "Fetched kv_tensor does not match the original kv_tensor"
     
 
-    matched_pre_len, kv_future = kvs.probe_max_prefix(
+    matched_pre_len, kv_future = kvs.get_prefix_kv(
         [1, 2, 3], 
         min_length=0, 
         max_length=3
