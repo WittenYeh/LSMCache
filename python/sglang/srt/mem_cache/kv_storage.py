@@ -197,13 +197,25 @@ class KVStorage:
             (2, self.layer_num, len(matched_key) - min_length, self.head_num, self.head_dim),
             dtype=dtype,
         ) 
-        for L in range(min_length, len(matched_key)):
-            db_key = self._make_key(matched_key[:L+1])
-            kv_cpu_raw = self.db.get(db_key)
-            self.statistics.n_db_gets += 1
-            assert kv_cpu_raw is not None, f"Key {db_key} not found in DB"
-            kv_tensor[:, :, L - min_length, :, :] = torch.frombuffer(
-                kv_cpu_raw, 
+        # for L in range(min_length, len(matched_key)):
+        #     db_key = self._make_key(matched_key[:L+1])
+        #     kv_cpu_raw = self.db.get(db_key)
+        #     self.statistics.n_db_gets += 1
+        #     assert kv_cpu_raw is not None, f"Key {db_key} not found in DB"
+        #     kv_tensor[:, :, L - min_length, :, :] = torch.frombuffer(
+        #         kv_cpu_raw, 
+        #         dtype=dtype,
+        #         count=2 * self.layer_num * self.head_num * self.head_dim,
+        #     ).reshape(
+        #         2, self.layer_num, self.head_num, self.head_dim
+        #     )
+               
+
+        db_keys = [self._make_key(matched_key[:L + 1]) for L in range(min_length, len(matched_key))]
+        kv_cpu_raws = self.db.multiget(db_keys)
+        for i, db_key in enumerate(db_keys):
+            kv_tensor[:, :, i, :, :] = torch.frombuffer(
+                kv_cpu_raws[db_key], 
                 dtype=dtype,
                 count=2 * self.layer_num * self.head_num * self.head_dim,
             ).reshape(
