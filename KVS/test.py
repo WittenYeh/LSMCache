@@ -18,7 +18,7 @@ from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 def start_server(enable_kvstore:bool = False):
     command = f"""
     python3 -m sglang.launch_server \
-    --model-path meta-llama/Llama-2-7b-chat-hf \
+    --model-path modelscope/Llama-2-7b-ms \
     --host 0.0.0.0 \
     --disable-overlap-schedule \
     --attention-backend torch_native \
@@ -45,7 +45,7 @@ def generate(prompt, max_new_tokens=32):
     )
     return response.json()
 
-def generate_batch(qas) -> Generator[ProgramState]:
+def generate_batch(qas):
     @sgl.function
     def multi_turns(s, qas):
         for qa in qas:
@@ -187,9 +187,10 @@ if __name__ == "__main__":
     
     with open(output_file, "w") as f:
         for i, (prompt, response) in enumerate(zip(multi_qas, response_list)):
+            resp = response.text().split("\n")[-1]
             f.write(f"=== Turn {i} ===\n")
             f.write(f"Prompt: {prompt['qas'][0]['prompt']}\n")
-            f.write(f"Response: {response.text().split("\n")[-1]}\n\n")
+            f.write(f"Response: {resp}\n\n")
         f.write(f"Average Latency: {(end - start) / args.num_requests:.2f} seconds\n")
     print_highlight(f"Output saved to {output_file}")
 

@@ -4,7 +4,7 @@ git clone git@github.com:WittenYeh/LSMCache.git
 cd LSMCache
 pip install --upgrade pip
 pip install -e "python[all]"
-pip install vllm==0.8.0
+pip install vllm==0.8.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # build rocksdb
 apt-get install build-essential libsnappy-dev zlib1g-dev libbz2-dev libgflags-dev liblz4-dev

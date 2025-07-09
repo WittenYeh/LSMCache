@@ -88,10 +88,34 @@ class SchedulerOutputProcessorMixin:
 
                     if req.finished():
                         self.tree_cache.cache_finished_req(req)
+                        token_ids = (req.origin_input_ids + req.output_ids)[:-1]
+                        kv_indices = self.req_to_token_pool.req_to_token[
+                            req.req_pool_idx, : len(token_ids)
+                        ]
+
+                        if self.kvstore:
+                            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+                            self.kvstore.put_prefix_kv(
+                                key=token_ids,
+                                kv_tensor=kv_tensor,
+                            )
+                            
                         req.time_stats.completion_time = time.time()
                     elif not batch.decoding_reqs or req not in batch.decoding_reqs:
                         # This updates radix so others can match
                         self.tree_cache.cache_unfinished_req(req)
+                        # put
+                        token_ids = req.fill_ids
+                        kv_indices = self.req_to_token_pool.req_to_token[
+                            req.req_pool_idx, : len(token_ids)
+                        ]
+
+                        if self.kvstore:
+                            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+                            self.kvstore.put_prefix_kv(
+                                key=token_ids,
+                                kv_tensor=kv_tensor,
+                            )
 
                     if req.return_logprob:
                         assert extend_logprob_start_len_per_req is not None
