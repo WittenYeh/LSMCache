@@ -265,8 +265,10 @@ class ForwardBatch:
     prefix_lens_rt: Optional[List[int]] = None
     prefix_lens_kvs: Optional[List[int]] = None
     prefix_lens_extra: Optional[List[int]] = None
+    recompute_lens: Optional[List[int]] = None
     kv_futures: Optional[List[Future]] = None
     out_cache_loc_for_kvstore: Optional[torch.Tensor] = None
+    out_cache_loc_for_recompute: Optional[torch.Tensor] = None
 
     @classmethod
     def init_new(
@@ -310,7 +312,8 @@ class ForwardBatch:
                 prefix_lens_kvs=batch.prefix_lens_kvs,
                 prefix_lens_extra=batch.prefix_lens_extra,
                 kv_futures=batch.kv_futures,
-                out_cache_loc_for_kvstore=batch.out_cache_loc_for_kvstore
+                out_cache_loc_for_kvstore=batch.out_cache_loc_for_kvstore,
+                out_cache_loc_for_recompute=batch.out_cache_loc_for_recompute,
             )
         else:
             ret = cls(

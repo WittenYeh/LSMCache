@@ -36,6 +36,8 @@ from sglang.srt.server_args import ServerArgs
 from sglang.srt.utils import DynamicGradMode, get_compiler_backend
 from sglang.utils import get_exception_traceback
 
+from sglang.srt.mem_cache.kv_storage import KVStorage
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,7 +61,10 @@ class TpModelWorkerClient:
         pp_rank: int,
         dp_rank: Optional[int],
         nccl_port: int,
+        kvstore: Optional[KVStorage] = None
     ):
+        assert kvstore is None, "KV storage architecture does not support TpModelWorkerClient class currently"
+        
         # Load the model
         self.worker = TpModelWorker(
             server_args, gpu_id, tp_rank, pp_rank, dp_rank, nccl_port

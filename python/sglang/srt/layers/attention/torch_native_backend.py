@@ -201,40 +201,45 @@ class TorchNativeAttnBackend(AttentionBackend):
         else:
             o = torch.empty_like(q)
         
-        if self.enable_kvstore:
-            loc_idx = 0
-            for i, kv_future in enumerate(forward_batch.kv_futures):
-                if kv_future is not None:
-                    assert forward_batch.prefix_lens_extra[i] > 0, \
-                        f"kv_future is not None but {forward_batch.prefix_lens_extra[i]=}"
-                    fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_len, head_num, head_dim]
-
-                    k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_len, head_num, head_dim]
-                    v_fetched = fetched_kv[1, layer.layer_id]
-                    assert k_fetched.shape == v_fetched.shape, \
-                        f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
-                        
-                    forward_batch.token_to_kv_pool.set_kv_buffer(
-                        layer,
-                        forward_batch.out_cache_loc_for_kvstore[loc_idx:loc_idx + forward_batch.prefix_lens_extra[i]],
-                        k_fetched[-forward_batch.prefix_lens_extra[i]:],
-                        v_fetched[-forward_batch.prefix_lens_extra[i]:],
-                    )
-                    loc_idx += forward_batch.prefix_lens_extra[i]
-                else:
-                    assert forward_batch.prefix_lens_extra[i] == 0, \
-                        f"kv_future is None but prefix_lens_extra[{i}] = {forward_batch.prefix_lens_extra[i]}"
-                    
         if save_kv_cache:
-            if self.enable_kvstore and sum(forward_batch.prefix_lens_extra) > 0:
+            if self.enable_kvstore:
+                loc_idx = 0
+                for i, kv_future in enumerate(forward_batch.kv_futures):
+                    if kv_future is not None:
+                        assert forward_batch.prefix_lens_extra[i] > 0, \
+                            f"kv_future is not None but {forward_batch.prefix_lens_extra[i]=}"
+                        fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_len, head_num, head_dim]
+
+                        k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_len, head_num, head_dim]
+                        v_fetched = fetched_kv[1, layer.layer_id]
+                        assert k_fetched.shape == v_fetched.shape, \
+                            f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
+                        
+                        # TODO: Optimize ineffictive IO bandwidth
+                        k_fetched_effictive = k_fetched[-forward_batch.prefix_lens_extra[i]:]
+                        v_fetched_effictive = v_fetched[-forward_batch.prefix_lens_extra[i]:]
+                            
+                        forward_batch.token_to_kv_pool.set_kv_buffer(
+                            layer,
+                            forward_batch.out_cache_loc_for_kvstore[loc_idx: loc_idx + forward_batch.prefix_lens_extra[i]],
+                            k_fetched_effictive,
+                            v_fetched_effictive,
+                        )
+                        loc_idx += forward_batch.prefix_lens_extra[i]
+                    else:
+                        assert forward_batch.prefix_lens_extra[i] == 0, \
+                            f"kv_future is None but prefix_lens_extra[{i}] = {forward_batch.prefix_lens_extra[i]}"
                 forward_batch.token_to_kv_pool.set_kv_buffer(
-                    layer, forward_batch.out_cache_loc[:-sum(forward_batch.prefix_lens_extra)], k, v
+                    layer, forward_batch.out_cache_loc_for_recompute, k, v
                 )
+            # if self.enable_kvstore and sum(forward_batch.prefix_lens_extra) > 0:
+            #     forward_batch.token_to_kv_pool.set_kv_buffer(
+            #         layer, forward_batch.out_cache_loc[:-sum(forward_batch.prefix_lens_extra)], k, v
+            #     )
             else: 
                 forward_batch.token_to_kv_pool.set_kv_buffer(
                     layer, forward_batch.out_cache_loc, k, v
                 )
-            
         
         use_gqa = layer.tp_q_head_num != layer.tp_k_head_num
 
