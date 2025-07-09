@@ -260,13 +260,6 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
 
-        # if self.kvstore:
-        #     kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
-        #     self.kvstore.put_prefix_kv(
-        #         key=token_ids,
-        #         kv_tensor=kv_tensor,
-        #     )
-        
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
             page_aligned_kv_indices = kv_indices[:page_aligned_len].clone()
@@ -297,13 +290,6 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
 
-        # if self.kvstore:
-        #     kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
-        #     self.kvstore.put_prefix_kv(
-        #         key=token_ids,
-        #         kv_tensor=kv_tensor,
-        #     )
-
         if self.page_size != 1:
             page_aligned_len = len(kv_indices) // self.page_size * self.page_size
             page_aligned_kv_indices = kv_indices[:page_aligned_len].clone()
@@ -313,9 +299,14 @@ class RadixCache(BasePrefixCache):
         page_aligned_token_ids = token_ids[:page_aligned_len]
         # Radix Cache takes one ref in memory pool
         new_prefix_len = self.insert(page_aligned_token_ids, page_aligned_kv_indices)
-        self.token_to_kv_pool_allocator.free(
-            kv_indices[len(req.prefix_indices) : new_prefix_len]
-        )
+        if self.kvstore:
+            self.token_to_kv_pool_allocator.free(
+                kv_indices[req.prefix_len_rt : new_prefix_len]
+            )
+        else:
+            self.token_to_kv_pool_allocator.free(
+                kv_indices[len(req.prefix_indices) : new_prefix_len]
+            )
 
         # The prefix indices could be updated, reuse it
         new_indices, new_last_node = self.match_prefix(key=page_aligned_token_ids)

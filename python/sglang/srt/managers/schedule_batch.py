@@ -1281,12 +1281,15 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         if self.token_to_kv_pool_allocator.page_size == 1:
             # allocate memory for extend tokens
             if not self.kvstore:
-                print(f"[ScheduleBatch] {extend_num_tokens=}")
                 out_cache_loc = self.alloc_token_slots(extend_num_tokens)
             else:
-                print(f"[ScheduleBatch] {extend_num_tokens=}, {prefix_lens_extra_num_tokens=}")
                 out_cache_loc = self.alloc_token_slots(extend_num_tokens + prefix_lens_extra_num_tokens)
                 out_cache_loc_for_kvstore = out_cache_loc[-prefix_lens_extra_num_tokens:]
+                loc = 0
+                for i,req in enumerate(reqs):
+                    if prefix_lens_extra[i] > 0:
+                        req.prefix_indices[-prefix_lens_extra[i] :] = out_cache_loc_for_kvstore[loc : loc + prefix_lens_extra[i]]
+                        loc += prefix_lens_extra[i]
         else:
             assert not self.kvstore, "KV Storage does not support paged cache design"
             last_loc = get_last_loc(
