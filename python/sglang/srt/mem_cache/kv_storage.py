@@ -13,21 +13,21 @@ import time
 class KVStorage:
     _instance = None
     _lock = threading.Lock()
-    
+
     @dataclass
     class Statistics:
         n_prefix_gets: int = 0
         n_prefix_puts: int = 0
-        
+
         n_db_gets: int = 0
         n_db_puts: int = 0
-        
+
         t_get: float = 0.0 
         t_put: float = 0.0 
-        
+
         n_wait_for_kv: int = 0
         t_wait_for_kv: float = 0.0 
-        
+
         n_executer_gets: int = 0
         t_executer_get: float = 0.0
 
@@ -71,7 +71,7 @@ class KVStorage:
         assert open_status
 
         self.executor = ThreadPoolExecutor(max_workers=executor_worker_num)
-        
+
         self.statistics = self.Statistics()
 
     def statistics_str(self):
@@ -115,7 +115,7 @@ class KVStorage:
         )
         end = time.time()   
         self.statistics.t_put += (end - start)
-        
+
     def _probe_max_prefix(
         self,
         key: List[int],
@@ -131,7 +131,7 @@ class KVStorage:
                 matched_pre_len = pre_len
                 break
         return matched_pre_len
-            
+
 
     def get_prefix_kv(
         self, 
@@ -146,10 +146,10 @@ class KVStorage:
             min_length=min_length,
             max_length=max_length
         )
-        
+
         if matched_pre_len > min_length:
             matched_key = key[:matched_pre_len]
-            
+
             self.statistics.n_executer_gets += 1
             # issue a worker thread to perform _rocksdb_get
             # the return value serves prefix [min_length, matched_pre_len]
@@ -166,7 +166,7 @@ class KVStorage:
             end = time.time()
             self.statistics.t_get += (end - start)
             return matched_pre_len, None
-        
+
     def _rocksdb_put(
         self,
         key: List[int],
@@ -193,21 +193,21 @@ class KVStorage:
         device: torch.device = torch.device("cuda"),
     ) -> torch.Tensor:
         dtype = self.dtype if self.dtype in [torch.float16, torch.float32, torch.float64] else torch.float32
-        kv_tensor = torch.empty(
-            (2, self.layer_num, len(matched_key) - min_length, self.head_num, self.head_dim),
-            dtype=dtype,
-        ) 
+        
         db_keys = [self._make_key(matched_key[:L + 1]) for L in range(min_length, len(matched_key))]
         kv_cpu_raws = self.db.multiget(db_keys)
-        for i, db_key in enumerate(db_keys):
-            kv_tensor[:, :, i, :, :] = torch.frombuffer(
-                kv_cpu_raws[db_key], 
-                dtype=dtype,
-                count=2 * self.layer_num * self.head_num * self.head_dim,
-            ).reshape(
-                2, self.layer_num, self.head_num, self.head_dim
-            )
-                
+        kv_tensor = torch.stack(
+            [
+                torch.frombuffer(
+                    kv_cpu_raws[db_key],
+                    dtype=dtype,
+                    count=2 * self.layer_num * self.head_num * self.head_dim,
+                ).reshape(2, self.layer_num, self.head_num, self.head_dim)
+                for db_key in db_keys
+            ],
+            dim=2,
+        )
+
         return kv_tensor.to(self.dtype).to(device)
 
     def wait_for_kv(
@@ -223,9 +223,9 @@ class KVStorage:
         end = time.time()
         self.statistics.t_wait_for_kv += (end - start)
         return kv_tensor
-        
-        
-        
+
+
+
 
 
 if __name__ == "__main__":
