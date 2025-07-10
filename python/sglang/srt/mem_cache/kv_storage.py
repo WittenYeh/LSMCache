@@ -177,8 +177,8 @@ class KVStorage:
             min_length=0,
             max_length=len(key)
         ) 
-        for L in range(exist_key_len + 1, len(key) + 1):
-            prefix_ids = key[:L]  # Prefix of length L
+        for L in range(exist_key_len, len(key)):
+            prefix_ids = key[:L+1]  # Prefix of length L
             prefix_tensor = kv_tensor[:, :, L, :, :]
             db_key = self._make_key(prefix_ids)
             value = prefix_tensor.tobytes()
@@ -242,7 +242,10 @@ if __name__ == "__main__":
     )
     
     key = [1, 2, 3, 4, 5]
-    kv_tensor = torch.randn(2, layer_num, len(key), head_num, head_dim, dtype=torch.bfloat16)
+    kv_tensor = torch.arange(
+        2 * layer_num * len(key) * head_num * head_dim,
+        dtype=torch.bfloat16,
+    ).reshape(2, layer_num, len(key), head_num, head_dim)
     
     kvs.put_prefix_kv(key, kv_tensor)
     print(f"Stored kv_tensor with shape {kv_tensor.shape} for key {key}")
