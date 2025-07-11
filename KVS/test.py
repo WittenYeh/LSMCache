@@ -15,14 +15,16 @@ import sglang as sgl
 
 from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 
-def start_server(enable_kvstore:bool = False):
+def start_server(enable_kvstore:bool = False, kvstore_compress:bool = False):
     command = f"""
     python3 -m sglang.launch_server \
-    --model-path meta-llama/Llama-2-7b-chat-hf \
+    --model-path meta-llama/Llama-3.1-8B \
     --host 0.0.0.0 \
     --disable-overlap-schedule \
     --attention-backend torch_native \
-    {"--enable-kvstore" if enable_kvstore else ""}
+    --dtype float16 \
+    {"--enable-kvstore" if enable_kvstore else ""} \
+    {"--kvstore-compress" if kvstore_compress else ""} \
     """
 
     print(f"Launching server with command: {command}")
@@ -59,7 +61,8 @@ def generate_batch(qas) -> List[ProgramState]:
         num_threads=4,
         progress_bar=True,
     )
-    return responses
+    
+    return [response.text()[len(prompt['qas'][0]['prompt']):] for response, prompt in zip(responses, qas)]
 
 TEMPLATES = [
     "What are the benefits of {}?",
@@ -158,6 +161,12 @@ def parse_args():
         nargs="?",
         help="Number of turns in the conversation (default: 1)",
     )
+    parser.add_argument(
+        "--kvstore-compress",
+        action="store_true",
+        default=False,
+        help="Compress KV cache data when using KV storage.",
+    )
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -168,7 +177,9 @@ if __name__ == "__main__":
     
     enable_kvstore = args.enable_kvstore
     output_file = args.output_file
-    server_process, port = start_server(enable_kvstore)
+    if args.kvstore_compress:
+        assert enable_kvstore, "KVStore compression can only be enabled when KVStore is enabled."
+    server_process, port = start_server(enable_kvstore, args.kvstore_compress)
     tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
 
     
@@ -189,8 +200,9 @@ if __name__ == "__main__":
         for i, (prompt, response) in enumerate(zip(multi_qas, response_list)):
             f.write(f"=== Turn {i} ===\n")
             f.write(f"Prompt: {prompt['qas'][0]['prompt']}\n")
-            f.write(f"Response: {response.text().split("\n")[-1]}\n\n")
+            f.write(f"Response: {response}\n\n")
         f.write(f"Average Latency: {(end - start) / args.num_requests:.2f} seconds\n")
     print_highlight(f"Output saved to {output_file}")
 
+    time.sleep(5)  # Give some time for the server to finish processing
     terminate_process(server_process)

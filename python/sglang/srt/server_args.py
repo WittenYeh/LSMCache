@@ -228,6 +228,7 @@ class ServerArgs:
     
     # For KV Storage
     enable_kvstore: bool = False
+    kvstore_compress: bool = False
 
     def __post_init__(self):
         # Expert parallelism
@@ -1501,7 +1502,11 @@ class ServerArgs:
             action="store_true",
             help="Use KV storage as backend KV-Cache IO engine." 
         )
-
+        parser.add_argument(
+            "--kvstore-compress",
+            action="store_true",
+            help="Compress KV cache data when using KV storage."
+        )
     @classmethod
     def from_cli_args(cls, args: argparse.Namespace):
         args.tp_size = args.tensor_parallel_size

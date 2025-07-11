@@ -4,6 +4,8 @@ num_requests=128
 prompt_token_num=128
 # maximum number of new tokens to generate
 max_new_tokens=4
+# compress kvcache in kvstore
+kvstore_compress=true
 
 rm -rf db
 
@@ -19,6 +21,7 @@ python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --enable-kvstore \
+    $( [ "$kvstore_compress" = true ] && echo "--kvstore-compress" ) \
     --output-file output_kv_warmup.txt \
     |& tee test_kv_warmup.log
 
@@ -27,6 +30,7 @@ python test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --enable-kvstore \
+    $( [ "$kvstore_compress" = true ] && echo "--kvstore-compress" ) \
     --output-file output_kv.txt \
     |& tee test_kv.log
 

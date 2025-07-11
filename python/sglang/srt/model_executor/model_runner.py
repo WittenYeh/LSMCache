@@ -225,15 +225,6 @@ class ModelRunner:
             "pp_proxy_tensors" in inspect.signature(self.model.forward).parameters
         )
         
-        self.kvstore = None
-        if server_args.enable_kvstore:
-            self.kvstore = KVStorage(
-                dtype=model_config.dtype,
-                head_num=model_config.num_key_value_heads,
-                head_dim=model_config.head_dim,
-                layer_num=model_config.num_hidden_layers,
-                executor_worker_num=4
-            )
 
     def initialize(self, min_per_gpu_memory: float):
         server_args = self.server_args
