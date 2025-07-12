@@ -297,7 +297,7 @@ class RadixCache(BasePrefixCache):
             req.req_pool_idx, : len(token_ids)
         ]
         
-        if self.kvstore:
+        if self.kvstore and False:
             kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
             self.kvstore.put_prefix_kv(
                 key=token_ids,
