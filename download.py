@@ -3,7 +3,7 @@ from modelscope.hub.snapshot_download import snapshot_download
 from modelscope.hub.api import HubApi  # 用于认证
 
 model_id = "modelscope/Llama-2-7b-ms"  
-local_dir = "/home/yeweitang/Llama-2-7b-ms"
+local_dir = "/home/u2021201768/"
 token = "5e159a6a-ba99-4abc-8f3d-2f4d41f368ce" 
 
 # 确保目标文件夹存在
