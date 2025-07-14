@@ -160,91 +160,51 @@ class KVStorage:
     def compress(
         self,
         kv_tensor: torch.Tensor,  # shape: [2, layer_num, head_num, head_dim]
-        num_bits: int = 4,
+        num_bits: int = 8,
     ) -> bytes:
         data = kv_tensor.cpu().contiguous()
-
         group_dim = 1
         B: int = 2 ** num_bits - 1
-
         mn = torch.min(data, dim=group_dim, keepdim=True)[0]
         mx = torch.max(data, dim=group_dim, keepdim=True)[0]
         scale = B / (mx - mn + 1e-8)
-
         data = (data - mn) * scale
         data = data.clamp(0, B).round().to(torch.uint8)
-
-        # Now pack data bits
-        n_values_per_byte = 8 // num_bits
-        flat = data.view(-1)
-
-        # Pad to make multiple of n_values_per_byte
-        remainder = flat.numel() % n_values_per_byte
-        if remainder != 0:
-            pad_size = n_values_per_byte - remainder
-            flat = torch.cat([flat, torch.zeros(pad_size, dtype=flat.dtype)], dim=0)
-
-        flat_np = flat.numpy()
-        packed = bytearray()
-
-        for i in range(0, len(flat_np), n_values_per_byte):
-            byte = 0
-            for j in range(n_values_per_byte):
-                byte |= (flat_np[i + j] & B) << (j * num_bits)
-            packed.append(byte)
-
-        packed_data = bytes(packed)
-        mn_bytes = mn.cpu().contiguous().numpy().tobytes()
-        scale_bytes = scale.cpu().contiguous().numpy().tobytes()
-
-        return packed_data + mn_bytes + scale_bytes
+        # pack data, mn, scale
+        data = data.cpu().contiguous().numpy().data.tobytes()
+        mn = mn.cpu().contiguous().numpy().data.tobytes()
+        scale = scale.cpu().contiguous().numpy().data.tobytes()
+        return data + mn + scale
 
     def decompress(
         self,
-        compressed: bytes,
-        num_bits: int = 4,
-        group_dim: int = 1,
-    ) -> torch.Tensor:
-        B = 2 ** num_bits - 1
-        n_values_per_byte = 8 // num_bits
-        
-        # figure out sizes
-        original_shape = (2, self.layer_num, self.head_num, self.head_dim)
-        num_elements = np.prod(original_shape)
-        num_packed_bytes = (num_elements + n_values_per_byte - 1) // n_values_per_byte
+        compressed_value: bytes,
+    ):
+        # compute sizes
+        shape_data = torch.Size((2, self.layer_num, self.head_num, self.head_dim))
+        shape_mn_scale = torch.Size((2, 1, self.head_num, self.head_dim))
 
-        # unpack data sections
-        packed_data = compressed[:num_packed_bytes]
-        rest = compressed[num_packed_bytes:]
+        data = torch.frombuffer(
+            bytearray(compressed_value), 
+            count=shape_data.numel(), 
+            dtype=torch.uint8,
+        ).reshape(shape_data)
+        mn = torch.frombuffer(
+            bytearray(compressed_value),
+            count=shape_mn_scale.numel(),
+            offset=shape_data.numel() * torch.uint8.itemsize,
+            dtype=self.dtype,
+        ).reshape(shape_mn_scale)
+        scale = torch.frombuffer(
+            bytearray(compressed_value), 
+            count=shape_mn_scale.numel(),
+            offset=shape_data.numel() * torch.uint8.itemsize + shape_mn_scale.numel() * self.dtype.itemsize,
+            dtype=self.dtype,
+        ).reshape(shape_mn_scale)
 
-        # compute sizes of mn, scale
-        group_shape = list(original_shape)
-        group_shape[group_dim] = 1
-        num_groups = np.prod(group_shape)
-
-        mn_bytes = rest[:self.dtype.itemsize * num_groups]
-        scale_bytes = rest[self.dtype.itemsize * num_groups:]
-
-        # decode mn and scale
-        mn = torch.frombuffer(mn_bytes, dtype=self.dtype).reshape(group_shape)
-        scale = torch.frombuffer(scale_bytes, dtype=self.dtype).reshape(group_shape)
-        
-        # unpack data values
-        unpacked = np.zeros(num_elements, dtype=np.uint8)
-        idx = 0
-        for byte in packed_data:
-            for j in range(n_values_per_byte):
-                if idx >= num_elements:
-                    break
-                unpacked[idx] = (byte >> (j * num_bits)) & B
-                idx += 1
-
-        # reshape back
-        data_q = torch.from_numpy(unpacked).view(original_shape).to(self.dtype)
-
-        restored = data_q / scale + mn
-        return restored
-
+        # dequantize
+        tensor = data.to(self.dtype) / scale + mn
+        return tensor
 
     def _probe_max_prefix(
         self,
