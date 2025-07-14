@@ -77,14 +77,10 @@ class KVStorage:
         assert open_status
 
         self.executor = ThreadPoolExecutor(max_workers=executor_worker_num)
-        self.db_put_queue: queue.Queue[Tuple[List[int], torch.Tensor]] = queue.Queue(maxsize=100)
-        [
-            threading.Thread(
-                target=self._db_put_worker, daemon=True, name="DB Put Worker"
-            ).start()
-            for _ in range(4)
-        ]
-
+        self.db_put_queue: queue.Queue[Tuple[List[int], torch.Tensor]] = queue.Queue(maxsize=20)
+        threading.Thread(
+            target=self._db_put_worker, daemon=True, name="DB Put Worker"
+        ).start()
         self.statistics = self.Statistics()
 
     def statistics_str(self):
@@ -147,22 +143,14 @@ class KVStorage:
             db_keys = [key_bytes[: (L + 1) * 4] for L in range(exist_key_len, len(key))]
 
             if self.do_compress:
-                db_values = self.compress(
-                    kv_tensor[:, :, exist_key_len:, :, :], num_bits=8
-                )
-            else:
-                kv_bytes = (
-                    kv_tensor[:, :, exist_key_len:, :, :]
-                    .permute(2, 0, 1, 3, 4)
-                    .cpu()
-                    .contiguous()
-                    .numpy()
-                    .data.tobytes()
-                )
-                value_len = 2 * self.layer_num * self.head_num * self.head_dim * self.dtype.itemsize
                 db_values = [
-                    kv_bytes[L * value_len : (L + 1) * value_len]
-                    for L in range(len(key) - exist_key_len)
+                    self.compress(kv_tensor[:, :, L, :, :])
+                    for L in range(exist_key_len, len(key))
+                ]
+            else:
+                db_values = [
+                    kv_tensor[:, :, L, :, :].cpu().contiguous().numpy().data.tobytes()
+                    for L in range(exist_key_len, len(key))
                 ]
 
             self.db.batch_put(db_keys, db_values)
@@ -171,57 +159,92 @@ class KVStorage:
 
     def compress(
         self,
-        tensor: torch.Tensor, # shape: [2, layer_num, pre_len, head_num, head_dim]
-        num_bits: int = 8,
-    ):
-        assert num_bits <= 8
+        kv_tensor: torch.Tensor,  # shape: [2, layer_num, head_num, head_dim]
+        num_bits: int = 4,
+    ) -> bytes:
+        data = kv_tensor.cpu().contiguous()
 
-        data = tensor.permute(2, 0, 1, 3, 4)  # shape: [pre_len, 2, layer_num, head_num, head_dim]
-        group_dim = 0
-        B : int = 2 ** num_bits - 1
+        group_dim = 1
+        B: int = 2 ** num_bits - 1
+
         mn = torch.min(data, dim=group_dim, keepdim=True)[0]
         mx = torch.max(data, dim=group_dim, keepdim=True)[0]
         scale = B / (mx - mn + 1e-8)
+
         data = (data - mn) * scale
         data = data.clamp(0, B).round().to(torch.uint8)
 
-        # pack data, mn, scale
-        data = data.cpu().contiguous().numpy().data.tobytes()
-        value_len = 2 * self.layer_num * self.head_num * self.head_dim * torch.uint8.itemsize
-        value_list = [data[value_len * L : value_len * (L + 1)] for L in range(tensor.shape[2])]
-        mn = mn.cpu().contiguous().numpy().data.tobytes()
-        scale = scale.cpu().contiguous().numpy().data.tobytes()
-        return [value + mn + scale for value in value_list]
+        # Now pack data bits
+        n_values_per_byte = 8 // num_bits
+        flat = data.view(-1)
+
+        # Pad to make multiple of n_values_per_byte
+        remainder = flat.numel() % n_values_per_byte
+        if remainder != 0:
+            pad_size = n_values_per_byte - remainder
+            flat = torch.cat([flat, torch.zeros(pad_size, dtype=flat.dtype)], dim=0)
+
+        flat_np = flat.numpy()
+        packed = bytearray()
+
+        for i in range(0, len(flat_np), n_values_per_byte):
+            byte = 0
+            for j in range(n_values_per_byte):
+                byte |= (flat_np[i + j] & B) << (j * num_bits)
+            packed.append(byte)
+
+        packed_data = bytes(packed)
+        mn_bytes = mn.cpu().contiguous().numpy().tobytes()
+        scale_bytes = scale.cpu().contiguous().numpy().tobytes()
+
+        return packed_data + mn_bytes + scale_bytes
 
     def decompress(
         self,
-        compressed_value: bytes,
-        num_bits: int = 8,
-    ):
-        """
-        Decompress a single compressed_value back to tensor of shape [2, layer_num, head_num, head_dim]
-        """
+        compressed: bytes,
+        num_bits: int = 4,
+        group_dim: int = 1,
+    ) -> torch.Tensor:
         B = 2 ** num_bits - 1
+        n_values_per_byte = 8 // num_bits
+        
+        # figure out sizes
+        original_shape = (2, self.layer_num, self.head_num, self.head_dim)
+        num_elements = np.prod(original_shape)
+        num_packed_bytes = (num_elements + n_values_per_byte - 1) // n_values_per_byte
 
-        # compute sizes
-        shape_data = (2, self.layer_num, self.head_num, self.head_dim)
-        data_size = torch.Size(shape_data).numel() * torch.uint8.itemsize
+        # unpack data sections
+        packed_data = compressed[:num_packed_bytes]
+        rest = compressed[num_packed_bytes:]
 
-        shape_mn_scale = (2, self.layer_num, self.head_num, self.head_dim)
-        mn_scale_size = torch.Size(shape_mn_scale).numel() * self.dtype.itemsize
+        # compute sizes of mn, scale
+        group_shape = list(original_shape)
+        group_shape[group_dim] = 1
+        num_groups = np.prod(group_shape)
 
-        # extract
-        data_bytes = compressed_value[:data_size]
-        mn_bytes = compressed_value[data_size : data_size + mn_scale_size]
-        scale_bytes = compressed_value[data_size + mn_scale_size :]
+        mn_bytes = rest[:self.dtype.itemsize * num_groups]
+        scale_bytes = rest[self.dtype.itemsize * num_groups:]
 
-        data = torch.frombuffer(bytearray(data_bytes), dtype=torch.uint8).reshape(shape_data)
-        mn = torch.frombuffer(bytearray(mn_bytes), dtype=self.dtype).reshape(shape_mn_scale)
-        scale = torch.frombuffer(bytearray(scale_bytes), dtype=self.dtype).reshape(shape_mn_scale)
+        # decode mn and scale
+        mn = torch.frombuffer(mn_bytes, dtype=self.dtype).reshape(group_shape)
+        scale = torch.frombuffer(scale_bytes, dtype=self.dtype).reshape(group_shape)
+        
+        # unpack data values
+        unpacked = np.zeros(num_elements, dtype=np.uint8)
+        idx = 0
+        for byte in packed_data:
+            for j in range(n_values_per_byte):
+                if idx >= num_elements:
+                    break
+                unpacked[idx] = (byte >> (j * num_bits)) & B
+                idx += 1
 
-        # dequantize
-        tensor = data.float() / scale + mn
-        return tensor
+        # reshape back
+        data_q = torch.from_numpy(unpacked).view(original_shape).to(self.dtype)
+
+        restored = data_q / scale + mn
+        return restored
+
 
     def _probe_max_prefix(
         self,
@@ -271,7 +294,6 @@ class KVStorage:
                 self._rocksdb_get,
                 matched_key,
                 min_length,
-                torch.device("cuda")
             )
         end = time.perf_counter()
         self.statistics.t_prefix_get += (end - start)
@@ -292,7 +314,7 @@ class KVStorage:
             prefix_ids = key[: L + 1]  # Prefix of length L
             prefix_tensor = kv_tensor[:, :, L, :, :]
             db_key = self._make_key(prefix_ids)
-            value = prefix_tensor.tobytes()
+            value = prefix_tensor.cpu().numpy().tobytes()
             put_status = self.db.put(db_key, value)
             assert put_status
 
@@ -300,7 +322,6 @@ class KVStorage:
         self,
         matched_key: List[int],
         min_length: int,
-        device: torch.device = torch.device("cuda"),
     ) -> torch.Tensor:
         self.statistics.n_executor_gets += 1
         start = time.perf_counter()
@@ -319,10 +340,10 @@ class KVStorage:
                 for db_key in db_keys
             ],
             dim=2,
-        )
+        ).to(self.dtype)
         end = time.perf_counter()
         self.statistics.t_executor_get += (end - start)
-        return kv_tensor.to(self.dtype).to(device)
+        return kv_tensor
 
     def wait_for_kv(
         self,
@@ -332,6 +353,7 @@ class KVStorage:
         self.statistics.n_wait_for_kv += 1
         start = time.perf_counter()
         kv_tensor : torch.Tensor = kv_future.result(timeout=timeout)
+        kv_tensor = kv_tensor.cuda()
         required_shape = (2, self.layer_num, kv_tensor.shape[2], self.head_num, self.head_dim)
         assert kv_tensor.shape == required_shape, f"{kv_tensor.shape=} does not match {required_shape=}"
         end = time.perf_counter()

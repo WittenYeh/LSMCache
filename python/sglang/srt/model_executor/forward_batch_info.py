@@ -267,6 +267,7 @@ class ForwardBatch:
     prefix_lens_extra: Optional[List[int]] = None
     kv_futures: Optional[List[Future]] = None
     out_cache_loc_for_kvstore: Optional[torch.Tensor] = None
+    fetched_kv: List[torch.Tensor] = None
 
     @classmethod
     def init_new(
