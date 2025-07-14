@@ -202,28 +202,39 @@ class TorchNativeAttnBackend(AttentionBackend):
             o = torch.empty_like(q)
         
         if self.enable_kvstore:
+            if forward_batch.fetched_kv is None:
+                forward_batch.fetched_kv = []
             loc_idx = 0
             for i, kv_future in enumerate(forward_batch.kv_futures):
+                if len(forward_batch.fetched_kv) <= i:
+                    forward_batch.fetched_kv.append(None)
                 if kv_future is not None:
                     assert forward_batch.prefix_lens_extra[i] > 0, \
                         f"kv_future is not None but {forward_batch.prefix_lens_extra[i]=}"
-                    fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_len, head_num, head_dim]
+                    if forward_batch.fetched_kv[i] is None:
+                        fetched_kv = self.kvstore.wait_for_kv(kv_future)  # [2, layer_num, prefix_lens_extra, head_num, head_dim]
+                        forward_batch.fetched_kv[i] = fetched_kv
+                    else:
+                        fetched_kv = forward_batch.fetched_kv[i]
 
-                    k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_len, head_num, head_dim]
+                    k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_lens_extra, head_num, head_dim]
                     v_fetched = fetched_kv[1, layer.layer_id]
                     assert k_fetched.shape == v_fetched.shape, \
                         f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
-                        
+                    assert k_fetched.shape[0] == forward_batch.prefix_lens_extra[i], \
+                        f"fetched kv length {k_fetched.shape[0]} does not match expected {forward_batch.prefix_lens_extra[i]}"
                     forward_batch.token_to_kv_pool.set_kv_buffer(
                         layer,
                         forward_batch.out_cache_loc_for_kvstore[loc_idx:loc_idx + forward_batch.prefix_lens_extra[i]],
-                        k_fetched[-forward_batch.prefix_lens_extra[i]:],
-                        v_fetched[-forward_batch.prefix_lens_extra[i]:],
+                        k_fetched,
+                        v_fetched,
                     )
                     loc_idx += forward_batch.prefix_lens_extra[i]
                 else:
                     assert forward_batch.prefix_lens_extra[i] == 0, \
                         f"kv_future is None but prefix_lens_extra[{i}] = {forward_batch.prefix_lens_extra[i]}"
+            if layer.layer_id == self.layer_num - 1:
+                forward_batch.fetched_kv = None  # Clear fetched kv after the last layer to save memory
                     
         if save_kv_cache:
             if self.enable_kvstore and sum(forward_batch.prefix_lens_extra) > 0:

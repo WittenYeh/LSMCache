@@ -264,7 +264,14 @@ class Scheduler(
         # Init KV Storage (if needed)
         self.enable_kvstore = server_args.enable_kvstore
         if self.enable_kvstore:
-            self.init_kvstorage()
+            self.kvstore = KVStorage(
+                dtype=self.model_config.dtype,
+                head_num=self.model_config.num_key_value_heads,
+                head_dim=self.model_config.head_dim,
+                layer_num=self.model_config.num_hidden_layers,
+                executor_worker_num=4,
+                compress=server_args.kvstore_compress,
+            )
         else:
             self.kvstore = None
 
@@ -577,15 +584,6 @@ class Scheduler(
                     * server_args.speculative_num_steps
                 )
             )
-        )
-
-    def init_kvstorage(self):
-        self.kvstore = KVStorage(
-            dtype=self.model_config.dtype,
-            head_num=self.model_config.num_key_value_heads,
-            head_dim=self.model_config.head_dim,
-            layer_num=self.model_config.num_hidden_layers,
-            executor_worker_num=4,
         )
 
     def init_metrics(self):

@@ -278,17 +278,6 @@ class MHATokenToKVPool(KVCache):
         logger.info(
             f"KV Cache is allocated. #tokens: {size}, K size: {k_size / GB:.2f} GB, V size: {v_size / GB:.2f} GB"
         )
-        
-        # if enable_kvstore:
-        #     self._create_storage()
-        
-    # def _create_storage(self):
-    #     self.kvstore = KVStorage(
-    #         self.dtype,
-    #         self.head_num,
-    #         self.head_dim,
-    #         self.layer_num
-    #     )
 
     def _create_buffers(self):
         with self.memory_saver_adapter.region():
