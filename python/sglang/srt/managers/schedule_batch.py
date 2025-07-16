@@ -688,8 +688,10 @@ class Req:
             self.prefix_indices_extra = torch.tensor(
                 prefix_indices_extra, dtype=torch.int64, device=self.device
             )
-
-        self.extend_input_len = len(self.fill_ids) - len(self.prefix_indices)
+        if self.kvstore is not None:
+            self.extend_input_len = len(self.fill_ids) - self.prefix_len_kvs
+        else:
+            self.extend_input_len = len(self.fill_ids) - len(self.prefix_indices)
 
     def adjust_max_prefix_ids(self):
         self.fill_ids = self.origin_input_ids + self.output_ids
@@ -1182,7 +1184,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         prefix_lens = [len(r.prefix_indices) for r in reqs]
         extend_lens = [r.extend_input_len for r in reqs]
         
-        print("extend_lens is: ", extend_lens)
+        # print("extend_lens is: ", extend_lens)
         
         if self.kvstore is not None:
             prefix_lens_rt = [r.prefix_len_rt for r in reqs]
@@ -1209,12 +1211,14 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         prefix_lens_tensor = torch.tensor(
             prefix_lens, dtype=torch.int64, device=self.device
         )
+        extend_lens_tensor = torch.tensor(
+            extend_lens, dtype=torch.int64, device=self.device
+        )
         if self.kvstore is not None:
             recompute_lens_tensor = torch.tensor(
                 recompute_lens, dtype=torch.int64, device=self.device
             )
             
-        extend_lens_tensor = seq_lens_tensor - prefix_lens_tensor
 
         # Copy prefix and do some basic check
         input_embeds = []
@@ -1226,7 +1230,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 pre_len_extra = prefix_lens_extra[i]
             
             req.req_pool_idx = req_pool_indices[i]
-            assert seq_len - pre_len == req.extend_input_len
+            if self.kvstore is None:
+                assert seq_len - pre_len == req.extend_input_len
+            else:
+                assert seq_len - req.prefix_len_kvs == req.extend_input_len
 
             if pre_len > 0:
                 self.req_to_token_pool.write(

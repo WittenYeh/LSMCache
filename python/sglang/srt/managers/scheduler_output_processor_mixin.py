@@ -88,34 +88,15 @@ class SchedulerOutputProcessorMixin:
 
                     if req.finished():
                         self.tree_cache.cache_finished_req(req)
-                        token_ids = (req.origin_input_ids + req.output_ids)[:-1]
-                        kv_indices = self.req_to_token_pool.req_to_token[
-                            req.req_pool_idx, : len(token_ids)
-                        ]
-
-                        if self.kvstore:
-                            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
-                            self.kvstore.put_prefix_kv(
-                                key=token_ids,
-                                kv_tensor=kv_tensor,
-                            )
+                        if self.kvstore is not None:
+                            self.store_finished_req(req)
                             
                         req.time_stats.completion_time = time.time()
                     elif not batch.decoding_reqs or req not in batch.decoding_reqs:
                         # This updates radix so others can match
                         self.tree_cache.cache_unfinished_req(req)
-                        # put
-                        token_ids = req.fill_ids
-                        kv_indices = self.req_to_token_pool.req_to_token[
-                            req.req_pool_idx, : len(token_ids)
-                        ]
-
-                        if self.kvstore:
-                            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
-                            self.kvstore.put_prefix_kv(
-                                key=token_ids,
-                                kv_tensor=kv_tensor,
-                            )
+                        if self.kvstore is not None:
+                            self.store_unfinished_req(req)
 
                     if req.return_logprob:
                         assert extend_logprob_start_len_per_req is not None
@@ -198,8 +179,12 @@ class SchedulerOutputProcessorMixin:
 
                     if req.finished():
                         self.tree_cache.cache_finished_req(req)
+                        if self.kvstore is not None:
+                            self.store_finished_req(req)
                     else:
                         self.tree_cache.cache_unfinished_req(req)
+                        if self.kvstore is not None:
+                            self.store_unfinished_req(req)
                 else:
                     # being chunked reqs' prefill is not finished
                     req.is_chunked -= 1
@@ -260,6 +245,8 @@ class SchedulerOutputProcessorMixin:
             req.check_finished()
             if req.finished():
                 self.tree_cache.cache_finished_req(req)
+                if self.kvstore is not None:
+                    self.store_finished_req(req)
                 req.time_stats.completion_time = time.time()
 
             if req.return_logprob and batch.spec_algorithm.is_none():
@@ -721,3 +708,29 @@ class SchedulerOutputProcessorMixin:
                 rids, finished_reasons, embeddings, prompt_tokens, cached_tokens
             )
         )
+
+    def store_finished_req(self, req: Req):
+        assert self.kvstore is not None
+        token_ids = (req.origin_input_ids + req.output_ids)[:-1]
+        kv_indices = self.req_to_token_pool.req_to_token[
+            req.req_pool_idx, : len(token_ids)
+        ]
+        kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+        self.kvstore.put_prefix_kv(
+            key=token_ids,
+            kv_tensor=kv_tensor,
+        )
+        
+    def store_unfinished_req(self, req: Req):
+        assert self.kvstore is not None
+        token_ids = req.fill_ids
+        kv_indices = self.req_to_token_pool.req_to_token[
+            req.req_pool_idx, : len(token_ids)
+        ]
+
+        if self.kvstore is not None:
+            kv_tensor = self.token_to_kv_pool_allocator.get_kvcache().get_flat_data(kv_indices)
+            self.kvstore.put_prefix_kv(
+                key=token_ids,
+                kv_tensor=kv_tensor,
+            )

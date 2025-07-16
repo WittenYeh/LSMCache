@@ -1,9 +1,9 @@
 # number of requests to run
 num_requests=10
 # number of tokens in each random prompts, set to 0 to use template prompts
-prompt_token_num=32
+prompt_token_num=0
 # maximum number of new tokens to generate
-max_new_tokens=8
+max_new_tokens=32
 
 rm -rf db
 

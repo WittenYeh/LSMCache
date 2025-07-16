@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, List
 
 import torch
 from torch.nn.functional import scaled_dot_product_attention
@@ -90,7 +90,7 @@ class TorchNativeAttnBackend(AttentionBackend):
             end_q = start_q + extend_seq_len_q
             end_kv = start_kv + seq_len_kv
             
-            print(f"seq_idx={seq_idx}, seq_len_kv={seq_len_kv}, extend_seq_len_q={extend_seq_len_q}, start_q={start_q}, end_q={end_q}")
+            # print(f"seq_idx={seq_idx}, seq_len_kv={seq_len_kv}, extend_seq_len_q={extend_seq_len_q}, start_q={start_q}, end_q={end_q}")
 
             per_req_query = query[:, start_q:end_q, :]
             per_req_query_redudant = torch.empty(
@@ -99,8 +99,8 @@ class TorchNativeAttnBackend(AttentionBackend):
                 device=per_req_query.device,
             )
 
-            print(f"shape of per_req_query_redudant[:, prefill_seq_len_q:, :]: {per_req_query_redudant[:, prefill_seq_len_q:, :].shape}")
-            print(f"shape of per_req_query: {per_req_query.shape}")
+            # print(f"shape of per_req_query_redudant[:, prefill_seq_len_q:, :]: {per_req_query_redudant[:, prefill_seq_len_q:, :].shape}")
+            # print(f"shape of per_req_query: {per_req_query.shape}")
 
             per_req_query_redudant[:, prefill_seq_len_q:, :] = per_req_query
 

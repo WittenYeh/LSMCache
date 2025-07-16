@@ -169,7 +169,7 @@ if __name__ == "__main__":
     enable_kvstore = args.enable_kvstore
     output_file = args.output_file
     server_process, port = start_server(enable_kvstore)
-    tokenizer = AutoTokenizer.from_pretrained("/home/u2021201768/modelscope/Llama-2-7b-ms/")
+    tokenizer = AutoTokenizer.from_pretrained("/home/u2021201768/modelscope/Llama-2-7b-ms")
 
     
     multi_qas = gen_arguments(args.num_requests, tokenizer, 

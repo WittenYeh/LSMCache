@@ -189,10 +189,6 @@ class KVStorage:
         self.statistics.t_wait_for_kv += (end - start)
         return kv_tensor
         
-        
-        
-
-
 if __name__ == "__main__":
     head_num = 2
     head_dim = 4
@@ -212,16 +208,15 @@ if __name__ == "__main__":
     kvs.put_prefix_kv(key, kv_tensor)
     print(f"Stored kv_tensor with shape {kv_tensor.shape} for key {key}")
     matched_pre_len, kv_future = kvs.probe_max_prefix(
-        key, 
+        key=key, 
         min_length=0, 
         max_length=len(key)
     )
     fetched_kv_tensor = kvs.wait_for_kv(kv_future)
     
-    assert matched_pre_len == len(key), "Matched prefix length does not match the original key length"
+    assert matched_pre_len == len(key), f"Matched prefix length ({matched_pre_len}) does not match the original key length ({len(key)})"
     assert torch.equal(fetched_kv_tensor.cpu(), kv_tensor.cpu()), "Fetched kv_tensor does not match the original kv_tensor"
     
-
     matched_pre_len, kv_future = kvs.probe_max_prefix(
         [1, 2, 3], 
         min_length=0, 
@@ -229,4 +224,4 @@ if __name__ == "__main__":
     )
     fetched_kv_tensor = kvs.wait_for_kv(kv_future)
     assert matched_pre_len == 3, "Matched prefix length should be 3 for key [1, 2, 3]"
-    assert torch.equal(fetched_kv_tensor.cpu(), kv_tensor.cpu()[:, :, :3, :, :]), "Fetched kv_tensor does not match the original kv_tensor for prefix [1, 2, 3]"
+    assert torch.equal(fetched_kv_tensor.cpu(), kv_tensor.cpu()[:, :, :3, :, :]), f"Fetched kv_tensor {fetched_kv_tensor.cpu()} does not match the original kv_tensor for prefix [1, 2, 3]"

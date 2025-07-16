@@ -1208,7 +1208,7 @@ class Scheduler(
             f += f"time: {gap_latency:.2f} "
         else:
             f += f"#queue-req: {len(self.waiting_queue)}"
-        if self.kvstore:
+        if self.kvstore is not None:
             f += "\n"
             f += self.kvstore.statistics_str()
         logger.info(f)
