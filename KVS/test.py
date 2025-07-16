@@ -18,7 +18,7 @@ from sglang.lang.backend.runtime_endpoint import RuntimeEndpoint
 def start_server(enable_kvstore:bool = False):
     command = f"""
     python3 -m sglang.launch_server \
-    --model-path modelscope/Llama-2-7b-ms \
+    --model-path /home/u2021201768/modelscope/Llama-2-7b-ms/ \
     --host 0.0.0.0 \
     --disable-overlap-schedule \
     --attention-backend torch_native \
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     enable_kvstore = args.enable_kvstore
     output_file = args.output_file
     server_process, port = start_server(enable_kvstore)
-    tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+    tokenizer = AutoTokenizer.from_pretrained("/home/u2021201768/modelscope/Llama-2-7b-ms/")
 
     
     multi_qas = gen_arguments(args.num_requests, tokenizer, 

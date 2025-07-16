@@ -564,7 +564,6 @@ class Scheduler(
                     page_size=self.page_size,
                     disable=server_args.disable_radix_cache,
                     enable_kv_cache_events=self.enable_kv_cache_events,
-                    kvstore=self.kvstore,
                 )
 
         self.decode_mem_cache_buf_multiplier = (
@@ -989,7 +988,8 @@ class Scheduler(
                 bootstrap_host=recv_req.bootstrap_host,
                 bootstrap_port=recv_req.bootstrap_port,
                 bootstrap_room=recv_req.bootstrap_room,
-                enable_kvstore=self.enable_kvstore
+                kvstore=self.kvstore,
+                device=self.device
             )
             req.tokenizer = self.tokenizer
 
@@ -1015,6 +1015,8 @@ class Scheduler(
                 self._add_request_to_queue(req)
                 return
         else:
+            # This function is not supported yet
+            assert not self.kvstore
             # Create a new request from a previous session
             session = self.sessions[recv_req.session_params.id]
             req = session.create_req(recv_req, self.tokenizer)

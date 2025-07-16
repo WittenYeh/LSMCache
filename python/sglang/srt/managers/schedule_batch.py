@@ -455,7 +455,8 @@ class Req:
         bootstrap_host: Optional[str] = None,
         bootstrap_port: Optional[int] = None,
         bootstrap_room: Optional[int] = None,
-        enable_kvstore: bool = False,
+        kvstore: Optional[KVStorage] = None,
+        device: Optional[str] = None,
     ):
         # Input and output info
         self.rid = rid
@@ -474,7 +475,8 @@ class Req:
         self.input_embeds = input_embeds
 
         # KV Storage
-        self.enable_kvstore = enable_kvstore
+        self.kvstore = kvstore
+        self.device = device
 
         # Sampling info
         if isinstance(sampling_params.custom_params, dict):
@@ -660,23 +662,10 @@ class Req:
                     )
                 )
             else:
-                key = self.adjust_max_prefix_ids()
                 self.prefix_indices, self.last_node = tree_cache.match_prefix(
                     rid=self.rid, 
-                    key=key
+                    key=self.adjust_max_prefix_ids()
                 )
-                # we have token kv storage into account
-                if self.enable_kvstore:
-                    self.prefix_len_rt = len(self.prefix_indices)
-                    # if kv_future is None, there is no
-                    self.prefix_len_kvs, self.kv_future = self.kvstore.probe_max_prefix(
-                        key=key, 
-                        min_length=self.prefix_len_rt,
-                        max_length=len(key),
-                    )
-                    self.prefix_len_extra = prefix_len_kvs - prefix_len_rt
-                    self.prefix_indices_extra = key[prefix_len_rt:prefix_len_kvs] if self.prefix_len_extra != 0 else []
-                
         elif enable_hierarchical_cache:
             # in case last_node is evicted during scheduling, we need to update the prefix_indices
             while self.last_node.evicted:
@@ -684,6 +673,21 @@ class Req:
                     : -len(self.last_node.host_value)
                 ]
                 self.last_node = self.last_node.parent
+
+        if self.kvstore is not None:
+            key = self.adjust_max_prefix_ids()
+            self.prefix_len_rt = len(self.prefix_indices)
+            # if kv_future is None, there is no
+            self.prefix_len_kvs, self.kv_future = self.kvstore.probe_max_prefix(
+                key=key, 
+                min_length=self.prefix_len_rt,
+                max_length=len(key),
+            )
+            self.prefix_len_extra = self.prefix_len_kvs - self.prefix_len_rt
+            prefix_indices_extra = key[self.prefix_len_rt:self.prefix_len_kvs] if self.prefix_len_extra != 0 else []
+            self.prefix_indices_extra = torch.tensor(
+                prefix_indices_extra, dtype=torch.int64, device=self.device
+            )
 
         self.extend_input_len = len(self.fill_ids) - len(self.prefix_indices)
 
@@ -1178,18 +1182,20 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         prefix_lens = [len(r.prefix_indices) for r in reqs]
         extend_lens = [r.extend_input_len for r in reqs]
         
-        if self.kvstore:
+        print("extend_lens is: ", extend_lens)
+        
+        if self.kvstore is not None:
             prefix_lens_rt = [r.prefix_len_rt for r in reqs]
             prefix_lens_kvs = [r.prefix_len_kvs for r in reqs]
             prefix_lens_extra = [r.prefix_len_kvs - r.prefix_len_rt for r in reqs]
-            prefix_lens_extra_num_tokens = sum(prefix_lens_extra)
+            extra_num_tokens = sum(prefix_lens_extra)
             recompute_lens = [len(r.fill_ids) - r.prefix_len_kvs for r in reqs]
-            recompute_lens_num_tokens = sum(recompute_lens)
+            recompute_num_tokens = sum(recompute_len for recompute_len in recompute_lens)
             kv_futures = [r.kv_future for r in reqs]
             # modify input ids to shrink number of recomputed tokens
             input_ids = [r.fill_ids[r.prefix_len_kvs:] for r in reqs]
             
-            assert extend_num_tokens == prefix_lens_extra_num_tokens + recompute_lens_num_tokens
+            assert extend_num_tokens == extra_num_tokens + recompute_num_tokens
         
         req_pool_indices_tensor = torch.tensor(req_pool_indices, dtype=torch.int64).to(
             self.device, non_blocking=True
@@ -1203,6 +1209,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         prefix_lens_tensor = torch.tensor(
             prefix_lens, dtype=torch.int64, device=self.device
         )
+        if self.kvstore is not None:
+            recompute_lens_tensor = torch.tensor(
+                recompute_lens, dtype=torch.int64, device=self.device
+            )
             
         extend_lens_tensor = seq_lens_tensor - prefix_lens_tensor
 
@@ -1211,7 +1221,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         extend_input_logprob_token_ids = []
         multimodal_inputs = []
 
-        for i, (req, seq_len, pre_len, pre_len_extra) in enumerate(zip(reqs, seq_lens, prefix_lens, prefix_lens_extra)):
+        for i, (req, seq_len, pre_len) in enumerate(zip(reqs, seq_lens, prefix_lens)):
+            if self.kvstore is not None:
+                pre_len_extra = prefix_lens_extra[i]
+            
             req.req_pool_idx = req_pool_indices[i]
             assert seq_len - pre_len == req.extend_input_len
 
@@ -1219,7 +1232,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 self.req_to_token_pool.write(
                     (req.req_pool_idx, slice(0, pre_len)), req.prefix_indices
                 )
-            if pre_len > 0:
+            if self.kvstore is not None:
                 self.req_to_token_pool.write(
                     (req.req_pool_idx, slice(0, pre_len_extra)), req.prefix_indices_extra
                 )
@@ -1293,15 +1306,15 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         # allocate memory for extend tokens
         if self.token_to_kv_pool_allocator.page_size == 1:
             # allocate memory for extend tokens
-            print(f"[ScheduleBatch] {extend_num_tokens=}")
+            print(f"[ScheduleBatch] allocate token slots number (out_cache_loc): extend_num_tokens={extend_num_tokens}")
             # extend_num_tokens contains number of tokens that we need to allocate for KV Storage
             out_cache_loc = self.alloc_token_slots(extend_num_tokens)
-            if self.kvstore:
-                assert recompute_lens_num_tokens + prefix_lens_extra_num_tokens == extend_num_tokens
-                out_cache_loc_for_recompute = out_cache_loc[:-prefix_lens_extra_num_tokens]
-                out_cache_loc_for_kvstore = out_cache_loc[:recompute_lens_num_tokens]
+            if self.kvstore is not None:
+                assert recompute_num_tokens + extra_num_tokens == extend_num_tokens
+                out_cache_loc_for_recompute = out_cache_loc[-recompute_num_tokens:]
+                out_cache_loc_for_kvstore = out_cache_loc[:-recompute_num_tokens]
         else:
-            assert not self.kvstore, "KV Storage does not support paged cache design"
+            assert self.kvstore is None, "KV Storage does not support paged cache design"
             last_loc = get_last_loc(
                 self.req_to_token_pool.req_to_token,
                 req_pool_indices_tensor,
@@ -1316,11 +1329,11 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
         self.req_pool_indices = req_pool_indices_tensor
         self.seq_lens = seq_lens_tensor
         self.out_cache_loc = out_cache_loc
-        if self.kvstore:
+        if self.kvstore is not None:
             self.prefix_lens_rt = prefix_lens_rt
             self.prefix_lens_kvs = prefix_lens_kvs
             self.prefix_lens_extra = prefix_lens_extra
-            self.recompute_lens = recompute_lens
+            self.recompute_lens = recompute_lens_tensor
             self.kv_futures = kv_futures
             self.out_cache_loc_for_kvstore = out_cache_loc_for_kvstore
             self.out_cache_loc_for_recompute = out_cache_loc_for_recompute
@@ -1366,9 +1379,16 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 out_cache_loc,
                 self.req_to_token_pool.req_to_token.shape[1],
             )
-        elif self.kvstore:
+        elif self.kvstore is not None:
             pt1, pt2 = 0, 0
             for i in range(bs):
+                print(f"batch {i}: req_to_token_pool write ->")
+                print(f"DEBUG: self.req_to_token_pool.req_to_token.shape = {self.req_to_token_pool.req_to_token.shape}")
+                print(f"prefix_len_extra = {prefix_lens_extra[i]}")
+                print(f"recompute_len = {recompute_lens[i]}")
+                print(f"prefix_len_rt = {prefix_lens_rt[i]}")
+                print(f"prefix_len_kvs = {prefix_lens_kvs[i]}")
+                print(f"prefix_len = {prefix_lens[i]}")
                 # copy cache loc for extra prefix tokens (transfered by KV Storage)
                 self.req_to_token_pool.write(
                     (req_pool_indices[i], slice(prefix_lens_rt[i], prefix_lens_kvs[i])),
@@ -1733,14 +1753,15 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
             extend_prefix_lens = self.prefix_lens
             extend_logprob_start_lens = self.extend_logprob_start_lens
 
-        if self.kvstore:
+        if self.kvstore is not None:
             prefix_lens_kvs = self.prefix_lens_kvs
             prefix_lens_rt = self.prefix_lens_rt
             prefix_lens_extra = self.prefix_lens_extra
             kv_futures = self.kv_futures
             out_cache_loc_for_kvstore = self.out_cache_loc_for_kvstore
             out_cache_loc_for_recompute = self.out_cache_loc_for_recompute
-
+            recompute_lens = self.recompute_lens
+            
         # Create seq_lens_cpu when needed
         if (
             (
@@ -1764,52 +1785,52 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
 
         global bid
         bid += 1
-        if not self.kvstore:
+        if self.kvstore is None:
             return ModelWorkerBatch(
-            bid=bid,
-            forward_mode=self.forward_mode,
-            input_ids=self.input_ids,
-            req_pool_indices=self.req_pool_indices,
-            seq_lens=self.seq_lens,
-            out_cache_loc=self.out_cache_loc,
-            seq_lens_cpu=seq_lens_cpu,
-            seq_lens_sum=self.seq_lens_sum,
-            return_logprob=self.return_logprob,
-            top_logprobs_nums=self.top_logprobs_nums,
-            token_ids_logprobs=self.token_ids_logprobs,
-            global_num_tokens=self.global_num_tokens,
-            global_num_tokens_for_logprob=self.global_num_tokens_for_logprob,
-            can_run_dp_cuda_graph=self.can_run_dp_cuda_graph,
-            tbo_split_seq_index=self.tbo_split_seq_index,
-            global_forward_mode=self.global_forward_mode,
-            extend_num_tokens=self.extend_num_tokens,
-            extend_seq_lens=extend_seq_lens,
-            extend_prefix_lens=extend_prefix_lens,
-            extend_logprob_start_lens=extend_logprob_start_lens,
-            multimodal_inputs=self.multimodal_inputs,
-            encoder_cached=self.encoder_cached,
-            encoder_lens=self.encoder_lens,
-            encoder_lens_cpu=self.encoder_lens_cpu,
-            encoder_out_cache_loc=self.encoder_out_cache_loc,
-            lora_paths=[req.lora_path for req in self.reqs],
-            sampling_info=self.sampling_info,
-            input_embeds=self.input_embeds,
-            spec_algorithm=self.spec_algorithm,
-            spec_info=self.spec_info,
-            capture_hidden_mode=(
-                CaptureHiddenMode.FULL
-                if self.return_hidden_states
-                else (
-                    getattr(
-                        self.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
+                bid=bid,
+                forward_mode=self.forward_mode,
+                input_ids=self.input_ids,
+                req_pool_indices=self.req_pool_indices,
+                seq_lens=self.seq_lens,
+                out_cache_loc=self.out_cache_loc,
+                seq_lens_cpu=seq_lens_cpu,
+                seq_lens_sum=self.seq_lens_sum,
+                return_logprob=self.return_logprob,
+                top_logprobs_nums=self.top_logprobs_nums,
+                token_ids_logprobs=self.token_ids_logprobs,
+                global_num_tokens=self.global_num_tokens,
+                global_num_tokens_for_logprob=self.global_num_tokens_for_logprob,
+                can_run_dp_cuda_graph=self.can_run_dp_cuda_graph,
+                tbo_split_seq_index=self.tbo_split_seq_index,
+                global_forward_mode=self.global_forward_mode,
+                extend_num_tokens=self.extend_num_tokens,
+                extend_seq_lens=extend_seq_lens,
+                extend_prefix_lens=extend_prefix_lens,
+                extend_logprob_start_lens=extend_logprob_start_lens,
+                multimodal_inputs=self.multimodal_inputs,
+                encoder_cached=self.encoder_cached,
+                encoder_lens=self.encoder_lens,
+                encoder_lens_cpu=self.encoder_lens_cpu,
+                encoder_out_cache_loc=self.encoder_out_cache_loc,
+                lora_paths=[req.lora_path for req in self.reqs],
+                sampling_info=self.sampling_info,
+                input_embeds=self.input_embeds,
+                spec_algorithm=self.spec_algorithm,
+                spec_info=self.spec_info,
+                capture_hidden_mode=(
+                    CaptureHiddenMode.FULL
+                    if self.return_hidden_states
+                    else (
+                        getattr(
+                            self.spec_info, "capture_hidden_mode", CaptureHiddenMode.NULL
+                        )
+                        if self.spec_info
+                        else CaptureHiddenMode.NULL
                     )
-                    if self.spec_info
-                    else CaptureHiddenMode.NULL
-                )
-            ),
-            extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
-            launch_done=self.launch_done,
-        )
+                ),
+                extend_input_logprob_token_ids=self.extend_input_logprob_token_ids,
+                launch_done=self.launch_done,
+            )
         else:
             return ModelWorkerBatch(
                 bid=bid,
@@ -1858,6 +1879,7 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
                 prefix_lens_rt=prefix_lens_rt,
                 prefix_lens_kvs=prefix_lens_kvs,
                 prefix_lens_extra=prefix_lens_extra,
+                recompute_lens=recompute_lens,
                 kv_futures=kv_futures,
                 out_cache_loc_for_kvstore=out_cache_loc_for_kvstore,
                 out_cache_loc_for_recompute=out_cache_loc_for_recompute,
@@ -1956,7 +1978,7 @@ class ModelWorkerBatch:
     prefix_lens_rt: Optional[List[int]] = None
     prefix_lens_kvs: Optional[List[int]] = None
     prefix_lens_extra: Optional[List[int]] = None
-    recompute_lens: Optional[List[int]] = None
+    recompute_lens: Optional[torch.Tensor] = None
     out_cache_loc_for_kvstore: Optional[torch.Tensor] = None
     out_cache_loc_for_recompute: Optional[torch.Tensor] = None
 

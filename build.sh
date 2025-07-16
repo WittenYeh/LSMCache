@@ -4,9 +4,14 @@ git clone git@github.com:WittenYeh/LSMCache.git
 cd LSMCache
 pip install --upgrade pip
 pip install -e "python[all]"
-pip install vllm==0.8.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install vllm==0.8.0
 
 # build rocksdb
-git clone https://github.com/twmht/python-rocksdb.git --recursive -b pybind11
 cd python-rocksdb
-python setup.py install
+make shared_lib -j8
+pip install pybind11 setuptools wheel
+cd rocksdb_pybinding
+python3 setup.py build_ext --inplace
+pip install .
+cd ..
+export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(pwd)

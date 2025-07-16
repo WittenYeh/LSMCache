@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import torch
 from torch.nn.functional import scaled_dot_product_attention
@@ -39,9 +39,9 @@ class TorchNativeAttnBackend(AttentionBackend):
         req_to_token: torch.Tensor,         # forward_batch.req_to_token_pool.req_to_token
         req_pool_indices: torch.Tensor,     # forward_batch.req_pool_indices
         seq_lens: torch.Tensor,             # forward_batch.seq_lens
-        # TODO: to figure out the meaning of `extend_prefix_lens` and `extend_seq_lens`
-        extend_prefix_lens: torch.Tensor,   # forward_batch.extend_prefix_lens
         extend_seq_lens: torch.Tensor,      # forward_batch.extend_seq_lens
+        extend_prefix_lens: Optional[torch.Tensor] = None,   # forward_batch.extend_prefix_lens / schedule_batch.prefix_lens
+        prefix_lens_kvs: Optional[List[int]] = None,
         scaling=None,                       # layer.scaling
         enable_gqa=False,                   # use_gqa
         causal=False,                       # not layer.is_cross_attention or layer.attn_type == AttentionType.ENCODER_ONLY
@@ -58,6 +58,7 @@ class TorchNativeAttnBackend(AttentionBackend):
             seq_lens: [num_seqs]
             extend_prefix_lens: [num_seqs]
             extend_seq_lens: [num_seqs]
+            prefix_lens_kvs: [num_seqs]
             scaling: float or None
             enable_gqa: bool
             causal: bool
@@ -65,8 +66,10 @@ class TorchNativeAttnBackend(AttentionBackend):
         Returns:
             output: [num_tokens, num_heads, head_size]
         """
-
-        assert seq_lens.shape[0] == extend_prefix_lens.shape[0]
+        if self.kvstore is None:
+            assert seq_lens.shape[0] == extend_prefix_lens.shape[0]
+        else:
+            assert seq_lens.shape[0] == len(prefix_lens_kvs)
         assert seq_lens.shape[0] == extend_seq_lens.shape[0]
 
         # [num_tokens, num_heads, head_size] -> [num_heads, num_tokens, head_size]
@@ -78,11 +81,16 @@ class TorchNativeAttnBackend(AttentionBackend):
             # Need optimize the performance later.
 
             extend_seq_len_q = extend_seq_lens[seq_idx]
-            prefill_seq_len_q = extend_prefix_lens[seq_idx]
+            if self.kvstore is None:
+                prefill_seq_len_q = extend_prefix_lens[seq_idx]
+            else:
+                prefill_seq_len_q = prefix_lens_kvs[seq_idx]
 
             seq_len_kv = seq_lens[seq_idx]
             end_q = start_q + extend_seq_len_q
             end_kv = start_kv + seq_len_kv
+            
+            print(f"seq_idx={seq_idx}, seq_len_kv={seq_len_kv}, extend_seq_len_q={extend_seq_len_q}, start_q={start_q}, end_q={end_q}")
 
             per_req_query = query[:, start_q:end_q, :]
             per_req_query_redudant = torch.empty(
@@ -90,6 +98,9 @@ class TorchNativeAttnBackend(AttentionBackend):
                 dtype=per_req_query.dtype,
                 device=per_req_query.device,
             )
+
+            print(f"shape of per_req_query_redudant[:, prefill_seq_len_q:, :]: {per_req_query_redudant[:, prefill_seq_len_q:, :].shape}")
+            print(f"shape of per_req_query: {per_req_query.shape}")
 
             per_req_query_redudant[:, prefill_seq_len_q:, :] = per_req_query
 
@@ -213,7 +224,7 @@ class TorchNativeAttnBackend(AttentionBackend):
                         k_fetched = fetched_kv[0, layer.layer_id]  # [prefix_len, head_num, head_dim]
                         v_fetched = fetched_kv[1, layer.layer_id]
                         assert k_fetched.shape == v_fetched.shape, \
-                            f"fetched kv shape mismatch: {k_fetched.shape=}, {v_fetched.shape=}"
+                            f"fetched kv shape mismatch: {k_fetched.shape}, {v_fetched.shape}"
                         
                         # TODO: Optimize ineffictive IO bandwidth
                         k_fetched_effictive = k_fetched[-forward_batch.prefix_lens_extra[i]:]
@@ -250,20 +261,37 @@ class TorchNativeAttnBackend(AttentionBackend):
         if layer.is_cross_attention or layer.attn_type == AttentionType.ENCODER_ONLY:
             causal = False
 
-        self._run_sdpa_forward_extend(
-            q_,
-            o_,
-            forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
-            forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
-            forward_batch.req_to_token_pool.req_to_token,
-            forward_batch.req_pool_indices,
-            forward_batch.seq_lens,
-            forward_batch.extend_prefix_lens,
-            forward_batch.extend_seq_lens,
-            scaling=layer.scaling,
-            enable_gqa=use_gqa,
-            causal=causal,
-        )
+        if self.kvstore is None:
+            self._run_sdpa_forward_extend(
+                query=q_,
+                output=o_,
+                k_cache=forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+                v_cache=forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+                req_to_token=forward_batch.req_to_token_pool.req_to_token,
+                req_pool_indices=forward_batch.req_pool_indices,
+                seq_lens=forward_batch.seq_lens,
+                extend_prefix_lens=forward_batch.extend_prefix_lens,
+                extend_seq_lens=forward_batch.extend_seq_lens,
+                scaling=layer.scaling,
+                enable_gqa=use_gqa,
+                causal=causal,
+            )
+        else:
+            self._run_sdpa_forward_extend(
+                query=q_,
+                output=o_,
+                k_cache=forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+                v_cache=forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+                req_to_token=forward_batch.req_to_token_pool.req_to_token,
+                req_pool_indices=forward_batch.req_pool_indices,
+                seq_lens=forward_batch.seq_lens,
+                prefix_lens_kvs=forward_batch.prefix_lens_kvs,
+                extend_seq_lens=forward_batch.extend_seq_lens,
+                scaling=layer.scaling,
+                enable_gqa=use_gqa,
+                causal=causal,
+            )
+        
         return o
 
     def forward_decode(
@@ -295,13 +323,13 @@ class TorchNativeAttnBackend(AttentionBackend):
         o_ = o.view(-1, layer.tp_q_head_num, layer.v_head_dim)
 
         self._run_sdpa_forward_decode(
-            q_,
-            o_,
-            forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
-            forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
-            forward_batch.req_to_token_pool.req_to_token,
-            forward_batch.req_pool_indices,
-            forward_batch.seq_lens,
+            query=q_,
+            output=o_,
+            k_cache=forward_batch.token_to_kv_pool.get_key_buffer(layer.layer_id),
+            v_cache=forward_batch.token_to_kv_pool.get_value_buffer(layer.layer_id),
+            req_to_token=forward_batch.req_to_token_pool.req_to_token,
+            req_pool_indices=forward_batch.req_pool_indices,
+            seq_lens=forward_batch.seq_lens,
             scaling=layer.scaling,
             enable_gqa=use_gqa,
             causal=False,

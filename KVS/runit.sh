@@ -1,5 +1,5 @@
 # number of requests to run
-num_requests=100
+num_requests=10
 # number of tokens in each random prompts, set to 0 to use template prompts
 prompt_token_num=32
 # maximum number of new tokens to generate
@@ -8,14 +8,14 @@ max_new_tokens=8
 rm -rf db
 
 # origin sglang with torch_native backend
-python test.py --num-requests $num_requests \
+TORCH_USE_CUDA_DSA=1 CUDA_LAUNCH_BLOCKING=1  python3 test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --output-file output.txt \
     |& tee test.log
 
 # kvstore enabled
-python test.py --num-requests $num_requests \
+TORCH_USE_CUDA_DSA=1 CUDA_LAUNCH_BLOCKING=1  python3 test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --enable-kvstore \
@@ -23,7 +23,7 @@ python test.py --num-requests $num_requests \
     |& tee test_kv_warmup.log
 
 # kvstore enabled, after db warmup
-python test.py --num-requests $num_requests \
+TORCH_USE_CUDA_DSA=1 CUDA_LAUNCH_BLOCKING=1  python3 test.py --num-requests $num_requests \
     --prompt-token-num $prompt_token_num \
     --max-new-tokens $max_new_tokens \
     --enable-kvstore \
